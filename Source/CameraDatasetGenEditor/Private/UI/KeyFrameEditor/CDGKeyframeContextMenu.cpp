@@ -189,7 +189,7 @@ void FCDGKeyframeContextMenu::FillTrajectorySubmenu(FMenuBuilder& MenuBuilder, c
 {
 	MenuBuilder.BeginSection("TrajectorySettings", LOCTEXT("TrajectorySettingsSection", "Trajectory Assignment"));
 	{
-		// Trajectory Name Editor
+		// Trajectory Name Editor with Dropdown
 		MenuBuilder.AddWidget(
 			SNew(SBox)
 			.Padding(FMargin(4.0f, 2.0f))
@@ -207,56 +207,146 @@ void FCDGKeyframeContextMenu::FillTrajectorySubmenu(FMenuBuilder& MenuBuilder, c
 				+ SHorizontalBox::Slot()
 				.FillWidth(1.0f)
 				[
-					SNew(SEditableTextBox)
-					.MinDesiredWidth(150.0f)
-					.Text_Lambda([SelectedKeyframes]()
-					{
-						if (SelectedKeyframes.Num() == 0)
-							return FText::GetEmpty();
-						
-						FName FirstName = SelectedKeyframes[0]->TrajectoryName;
-						bool bAllSame = true;
-						for (ACDGKeyframe* Keyframe : SelectedKeyframes)
+					SNew(SHorizontalBox)
+					+ SHorizontalBox::Slot()
+					.FillWidth(1.0f)
+					[
+						SNew(SEditableTextBox)
+						.MinDesiredWidth(120.0f)
+						.Text_Lambda([SelectedKeyframes]()
 						{
-							if (Keyframe->TrajectoryName != FirstName)
+							if (SelectedKeyframes.Num() == 0)
+								return FText::GetEmpty();
+							
+							FName FirstName = SelectedKeyframes[0]->TrajectoryName;
+							bool bAllSame = true;
+							for (ACDGKeyframe* Keyframe : SelectedKeyframes)
 							{
-								bAllSame = false;
-								break;
-							}
-						}
-						
-						if (!bAllSame)
-							return LOCTEXT("MultipleValues", "(Multiple)");
-						return FText::FromName(FirstName);
-					})
-				.HintText(LOCTEXT("TrajectoryNameHint", "Enter trajectory name"))
-				.OnTextCommitted_Lambda([SelectedKeyframes](const FText& NewText, ETextCommit::Type CommitType)
-				{
-					if (CommitType == ETextCommit::OnEnter || CommitType == ETextCommit::OnUserMovedFocus)
-					{
-						const FScopedTransaction Transaction(LOCTEXT("SetTrajectoryName", "Set Trajectory Name"));
-						FName NewName = FName(*NewText.ToString());
-						for (ACDGKeyframe* Keyframe : SelectedKeyframes)
-						{
-							Keyframe->Modify();
-							
-							// Store old trajectory name before changing
-							FName OldTrajectoryName = Keyframe->TrajectoryName;
-							
-							// Update trajectory name
-							Keyframe->TrajectoryName = NewName;
-							
-							// Notify subsystem about trajectory name change
-							if (UWorld* World = Keyframe->GetWorld())
-							{
-								if (UCDGTrajectorySubsystem* Subsystem = World->GetSubsystem<UCDGTrajectorySubsystem>())
+								if (Keyframe->TrajectoryName != FirstName)
 								{
-									Subsystem->OnKeyframeTrajectoryNameChanged(Keyframe, OldTrajectoryName);
+									bAllSame = false;
+									break;
 								}
 							}
-						}
-					}
-				})
+							
+							if (!bAllSame)
+								return LOCTEXT("MultipleValues", "(Multiple)");
+							return FText::FromName(FirstName);
+						})
+						.HintText(LOCTEXT("TrajectoryNameHint", "Enter trajectory name"))
+						.OnTextCommitted_Lambda([SelectedKeyframes](const FText& NewText, ETextCommit::Type CommitType)
+						{
+							if (CommitType == ETextCommit::OnEnter || CommitType == ETextCommit::OnUserMovedFocus)
+							{
+								const FScopedTransaction Transaction(LOCTEXT("SetTrajectoryName", "Set Trajectory Name"));
+								FName NewName = FName(*NewText.ToString());
+								for (ACDGKeyframe* Keyframe : SelectedKeyframes)
+								{
+									Keyframe->Modify();
+									
+									// Store old trajectory name before changing
+									FName OldTrajectoryName = Keyframe->TrajectoryName;
+									
+									// Update trajectory name
+									Keyframe->TrajectoryName = NewName;
+									
+									// Notify subsystem about trajectory name change
+									if (UWorld* World = Keyframe->GetWorld())
+									{
+										if (UCDGTrajectorySubsystem* Subsystem = World->GetSubsystem<UCDGTrajectorySubsystem>())
+										{
+											Subsystem->OnKeyframeTrajectoryNameChanged(Keyframe, OldTrajectoryName);
+										}
+									}
+								}
+							}
+						})
+					]
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.Padding(2, 0, 0, 0)
+					[
+						SNew(SComboButton)
+						.HasDownArrow(true)
+						.ButtonStyle(FAppStyle::Get(), "SimpleButton")
+						.ContentPadding(FMargin(2, 0))
+						.ToolTipText(LOCTEXT("SelectExistingTrajectoryTooltip", "Select from existing trajectories"))
+						.OnGetMenuContent_Lambda([SelectedKeyframes]() -> TSharedRef<SWidget>
+						{
+							FMenuBuilder TrajectoryMenuBuilder(true, nullptr);
+							
+							// Get existing trajectories from subsystem
+							if (SelectedKeyframes.Num() > 0 && SelectedKeyframes[0])
+							{
+								if (UWorld* World = SelectedKeyframes[0]->GetWorld())
+								{
+									if (UCDGTrajectorySubsystem* Subsystem = World->GetSubsystem<UCDGTrajectorySubsystem>())
+									{
+										TArray<FName> ExistingTrajectories = Subsystem->GetTrajectoryNames();
+										
+										if (ExistingTrajectories.Num() > 0)
+										{
+											TrajectoryMenuBuilder.BeginSection("ExistingTrajectories", LOCTEXT("ExistingTrajectoriesSection", "Existing Trajectories"));
+											{
+												for (const FName& TrajectoryName : ExistingTrajectories)
+												{
+													TrajectoryMenuBuilder.AddMenuEntry(
+														FText::FromName(TrajectoryName),
+														FText::Format(LOCTEXT("SelectTrajectoryTooltip", "Assign to trajectory '{0}'"), FText::FromName(TrajectoryName)),
+														FSlateIcon(),
+														FUIAction(
+															FExecuteAction::CreateLambda([SelectedKeyframes, TrajectoryName]()
+															{
+																const FScopedTransaction Transaction(LOCTEXT("SetTrajectoryName", "Set Trajectory Name"));
+																for (ACDGKeyframe* Keyframe : SelectedKeyframes)
+																{
+																	Keyframe->Modify();
+																	
+																	// Store old trajectory name before changing
+																	FName OldTrajectoryName = Keyframe->TrajectoryName;
+																	
+																	// Update trajectory name
+																	Keyframe->TrajectoryName = TrajectoryName;
+																	
+																	// Notify subsystem about trajectory name change
+																	if (UWorld* World = Keyframe->GetWorld())
+																	{
+																		if (UCDGTrajectorySubsystem* SubsystemInner = World->GetSubsystem<UCDGTrajectorySubsystem>())
+																		{
+																			SubsystemInner->OnKeyframeTrajectoryNameChanged(Keyframe, OldTrajectoryName);
+																		}
+																	}
+																}
+															})
+														)
+													);
+												}
+											}
+											TrajectoryMenuBuilder.EndSection();
+										}
+										else
+										{
+											TrajectoryMenuBuilder.AddWidget(
+												SNew(STextBlock)
+												.Text(LOCTEXT("NoTrajectoriesFound", "No existing trajectories"))
+												.ColorAndOpacity(FSlateColor::UseSubduedForeground()),
+												FText::GetEmpty()
+											);
+										}
+									}
+								}
+							}
+							
+							return TrajectoryMenuBuilder.MakeWidget();
+						})
+						.ButtonContent()
+						[
+							SNew(STextBlock)
+							.Font(FAppStyle::Get().GetFontStyle("FontAwesome.9"))
+							.Text(FText::FromString(FString(TEXT("\xf0c9")))) // FA_BARS icon
+							.ColorAndOpacity(FSlateColor::UseForeground())
+						]
+					]
 				]
 			],
 			FText::GetEmpty()
