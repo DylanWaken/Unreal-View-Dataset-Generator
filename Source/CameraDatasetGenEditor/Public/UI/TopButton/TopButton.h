@@ -23,8 +23,8 @@ private:
 	/** Extend the level editor toolbar with our button */
 	void ExtendLevelEditorToolbar();
 	
-	/** Called when the button is clicked */
-	void OnButtonClicked();
+	/** Called when the button is clicked - opens the dropdown menu */
+	TSharedRef<SWidget> OnGetMenuContent();
 
 private:
 	/** The current icon style name being used */

@@ -206,6 +206,7 @@ public:
 protected:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+	virtual void Destroyed() override;
 	virtual void Tick(float DeltaTime) override;
 
 #if WITH_EDITOR
@@ -355,6 +356,10 @@ public:
 
 	/** Update the visualizer component */
 	void UpdateVisualizer();
+
+	/** Get the display color for this keyframe (from trajectory or default to white) */
+	UFUNCTION(BlueprintCallable, Category = "CDGKeyframe")
+	FLinearColor GetVisualizationColor() const;
 
 #if WITH_EDITOR
 	// ==================== EDITOR VISUALIZATION ====================

@@ -96,6 +96,20 @@ void ACDGKeyframe::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	Super::EndPlay(EndPlayReason);
 }
 
+void ACDGKeyframe::Destroyed()
+{
+	// Ensure cleanup happens when actor is destroyed (more reliable than EndPlay in editor)
+	if (UWorld* World = GetWorld())
+	{
+		if (UCDGTrajectorySubsystem* Subsystem = World->GetSubsystem<UCDGTrajectorySubsystem>())
+		{
+			Subsystem->UnregisterKeyframe(this);
+		}
+	}
+
+	Super::Destroyed();
+}
+
 void ACDGKeyframe::Tick(float DeltaTime)
 {
 	Super::Tick(DeltaTime);
@@ -105,6 +119,12 @@ void ACDGKeyframe::Tick(float DeltaTime)
 	if (!GetWorld()->IsGameWorld())
 	{
 		UpdateVisibility();
+	}
+	
+	// Ensure visualizer component stays aligned with keyframe
+	if (VisualizerComponent)
+	{
+		VisualizerComponent->SetRelativeTransform(FTransform::Identity);
 	}
 #endif
 }
@@ -132,13 +152,22 @@ void ACDGKeyframe::PostEditChangeProperty(FPropertyChangedEvent& PropertyChanged
 		UpdateFOVFromFocalLength();
 		UpdateVisualizer();
 	}
-	else if (PropertyName == GET_MEMBER_NAME_CHECKED(FCDGCameraFilmbackSettings, SensorWidth) ||
-	         PropertyName == GET_MEMBER_NAME_CHECKED(FCDGCameraFilmbackSettings, SensorHeight))
+	else if (PropertyName == GET_MEMBER_NAME_CHECKED(FCDGCameraFilmbackSettings, SensorWidth))
 	{
-		// Recalculate aspect ratio
-		if (FilmbackSettings.SensorHeight > 0.0f)
+		// Update sensor height from width and aspect ratio (height is locked to aspect ratio)
+		if (FilmbackSettings.SensorAspectRatio > 0.0f)
 		{
-			FilmbackSettings.SensorAspectRatio = FilmbackSettings.SensorWidth / FilmbackSettings.SensorHeight;
+			FilmbackSettings.SensorHeight = FilmbackSettings.SensorWidth / FilmbackSettings.SensorAspectRatio;
+		}
+		UpdateFOVFromFocalLength();
+		UpdateVisualizer();
+	}
+	else if (PropertyName == GET_MEMBER_NAME_CHECKED(FCDGCameraFilmbackSettings, SensorAspectRatio))
+	{
+		// Update sensor height from width and aspect ratio (height is locked to aspect ratio)
+		if (FilmbackSettings.SensorAspectRatio > 0.0f)
+		{
+			FilmbackSettings.SensorHeight = FilmbackSettings.SensorWidth / FilmbackSettings.SensorAspectRatio;
 		}
 		UpdateFOVFromFocalLength();
 		UpdateVisualizer();
@@ -405,13 +434,31 @@ void ACDGKeyframe::UpdateVisibility()
 #endif
 }
 
+FLinearColor ACDGKeyframe::GetVisualizationColor() const
+{
+	// Get color from trajectory if assigned
+	if (IsAssignedToTrajectory())
+	{
+		if (UWorld* World = GetWorld())
+		{
+			if (UCDGTrajectorySubsystem* Subsystem = World->GetSubsystem<UCDGTrajectorySubsystem>())
+			{
+				return Subsystem->GetTrajectoryColor(TrajectoryName);
+			}
+		}
+	}
+	
+	// Default to white if no trajectory available
+	return FLinearColor::White;
+}
+
 void ACDGKeyframe::UpdateVisualizer()
 {
 #if WITH_EDITORONLY_DATA
 	if (VisualizerComponent)
 	{
 		VisualizerComponent->FrustumSize = FrustumSize;
-		VisualizerComponent->FrustumColor = KeyframeColor;
+		VisualizerComponent->FrustumColor = GetVisualizationColor();
 		VisualizerComponent->UpdateVisualization();
 		
 		// Force recreate the scene proxy to pick up FOV/aspect ratio changes

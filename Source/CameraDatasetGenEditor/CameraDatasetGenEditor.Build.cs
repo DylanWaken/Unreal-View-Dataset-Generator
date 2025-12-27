@@ -45,6 +45,7 @@ public class CameraDatasetGenEditor : ModuleRules
 			"InputCore",
 			"ToolMenus",  // Required for UToolMenus toolbar extension
 			"PropertyEditor",  // Required for details panel access
+			"RenderCore",  // Required for GWhiteTexture
 			// ... add private dependencies that you statically link with here ...	
 		}
 		);

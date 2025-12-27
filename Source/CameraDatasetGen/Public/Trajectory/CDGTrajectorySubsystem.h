@@ -43,6 +43,12 @@ public:
 	/** Default trajectory name for new keyframes */
 	static const FName DefaultTrajectoryName;
 
+	/** Default color palette for trajectories (8 light colors) */
+	static const TArray<FLinearColor> DefaultColorPalette;
+
+	/** Get the next color from the color palette based on trajectory count */
+	FLinearColor GetNextTrajectoryColor() const;
+
 	// ==================== TRAJECTORY MANAGEMENT ====================
 
 	/** Get all trajectory actors */
@@ -152,6 +158,24 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "CDGTrajectory|Utility")
 	FName GenerateUniqueTrajectoryName(const FString& Prefix = TEXT("Trajectory")) const;
 
+	/** Get the color for a trajectory by name */
+	UFUNCTION(BlueprintCallable, Category = "CDGTrajectory|Utility")
+	FLinearColor GetTrajectoryColor(FName TrajectoryName) const;
+
+	// ==================== VISUALIZER CONTROL ====================
+
+	/** Disable all visualizers for trajectories and keyframes */
+	UFUNCTION(BlueprintCallable, Category = "CDGTrajectory|Utility")
+	void DisableAllVisualizers();
+
+	/** Enable all visualizers for trajectories and keyframes */
+	UFUNCTION(BlueprintCallable, Category = "CDGTrajectory|Utility")
+	void EnableAllVisualizers();
+
+	/** Restore previously saved visualizer states */
+	UFUNCTION(BlueprintCallable, Category = "CDGTrajectory|Utility")
+	void RestoreVisualizerStates();
+
 protected:
 	// ==================== INTERNAL DATA ====================
 
@@ -165,6 +189,12 @@ protected:
 
 	/** Whether the subsystem has been initialized */
 	bool bIsInitialized = false;
+
+	/** Saved visualizer states for trajectories (bShowTrajectory) */
+	TMap<FName, bool> SavedTrajectoryVisualizerStates;
+
+	/** Saved visualizer states for keyframes (frustum and trajectory line) */
+	TMap<TObjectPtr<ACDGKeyframe>, TPair<bool, bool>> SavedKeyframeVisualizerStates;
 
 	// ==================== INTERNAL METHODS ====================
 

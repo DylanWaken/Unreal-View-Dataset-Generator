@@ -3,6 +3,7 @@
 #include "UI/KeyFrameEditor/CDGKeyframeContextMenu.h"
 #include "Trajectory/CDGKeyframe.h"
 #include "Trajectory/CDGTrajectorySubsystem.h"
+#include "CDGEditorState.h"
 #include "LevelEditor.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Framework/Commands/UICommandList.h"
@@ -138,21 +139,32 @@ void FCDGKeyframeContextMenu::FillKeyframeContextMenu(FMenuBuilder& MenuBuilder,
 		// Quick action: Pilot this keyframe (for single selection)
 		if (SelectedKeyframes.Num() == 1)
 		{
-			MenuBuilder.AddMenuEntry(
-				LOCTEXT("PilotKeyframe", "Pilot Camera"),
-				LOCTEXT("PilotKeyframeTooltip", "Pilot the viewport through this keyframe's camera"),
-				FSlateIcon("TopButtonStyle", "TopButton.CustomIcon.Small"),
-				FUIAction(
-					FExecuteAction::CreateLambda([Keyframe = SelectedKeyframes[0]]()
+		MenuBuilder.AddMenuEntry(
+			LOCTEXT("PilotKeyframe", "Pilot Camera"),
+			LOCTEXT("PilotKeyframeTooltip", "Preview this keyframe's camera (position, rotation, and FOV)"),
+			FSlateIcon("TopButtonStyle", "TopButton.CustomIcon.Small"),
+			FUIAction(
+				FExecuteAction::CreateLambda([Keyframe = SelectedKeyframes[0]]()
+				{
+					if (Keyframe)
 					{
-						if (Keyframe)
+						// Get editor state subsystem
+						UWorld* World = Keyframe->GetWorld();
+						UCDGEditorState* EditorState = World ? World->GetSubsystem<UCDGEditorState>() : nullptr;
+						
+						if (EditorState)
 						{
-							// Pilot the active viewport to this keyframe
-							GEditor->MoveViewportCamerasToActor(*Keyframe, false);
+							// Enter camera preview state
+							EditorState->EnterCameraPreview(Keyframe);
 						}
-					})
-				)
-			);
+						else
+						{
+							UE_LOG(LogTemp, Error, TEXT("CDGKeyframeContextMenu: Failed to get UCDGEditorState subsystem"));
+						}
+					}
+				})
+			)
+		);
 		}
 
 		// Open full details panel
@@ -907,6 +919,11 @@ void FCDGKeyframeContextMenu::FillCameraSubmenu(FMenuBuilder& MenuBuilder, const
 						for (ACDGKeyframe* Keyframe : SelectedKeyframes)
 						{
 							Keyframe->FilmbackSettings.SensorWidth = FMath::Max(FCDGCameraFilmbackSettings::SensorWidthMin, NewValue);
+							// Update sensor height from width and aspect ratio (height is locked to aspect ratio)
+							if (Keyframe->FilmbackSettings.SensorAspectRatio > 0.0f)
+							{
+								Keyframe->FilmbackSettings.SensorHeight = Keyframe->FilmbackSettings.SensorWidth / Keyframe->FilmbackSettings.SensorAspectRatio;
+							}
 							Keyframe->UpdateVisualizer();
 						}
 						GEditor->RedrawLevelEditingViewports();
@@ -918,6 +935,11 @@ void FCDGKeyframeContextMenu::FillCameraSubmenu(FMenuBuilder& MenuBuilder, const
 						{
 							Keyframe->Modify();
 							Keyframe->FilmbackSettings.SensorWidth = FMath::Max(FCDGCameraFilmbackSettings::SensorWidthMin, NewValue);
+							// Update sensor height from width and aspect ratio (height is locked to aspect ratio)
+							if (Keyframe->FilmbackSettings.SensorAspectRatio > 0.0f)
+							{
+								Keyframe->FilmbackSettings.SensorHeight = Keyframe->FilmbackSettings.SensorWidth / Keyframe->FilmbackSettings.SensorAspectRatio;
+							}
 							Keyframe->UpdateVisualizer();
 						}
 					})
@@ -926,7 +948,7 @@ void FCDGKeyframeContextMenu::FillCameraSubmenu(FMenuBuilder& MenuBuilder, const
 			FText::GetEmpty()
 		);
 
-		// Sensor Height Editor
+		// Sensor Height Display (Read-only - calculated from width and aspect ratio)
 		MenuBuilder.AddWidget(
 			SNew(SBox)
 			.Padding(FMargin(4.0f, 2.0f))
@@ -944,16 +966,11 @@ void FCDGKeyframeContextMenu::FillCameraSubmenu(FMenuBuilder& MenuBuilder, const
 				+ SHorizontalBox::Slot()
 				.FillWidth(1.0f)
 				[
-					SNew(SNumericEntryBox<float>)
-					.MinDesiredValueWidth(130.0f)
-					.AllowSpin(true)
-					.MinValue(FCDGCameraFilmbackSettings::SensorHeightMin)
-					.MaxValue(FCDGCameraFilmbackSettings::SensorHeightMax)
-					.Delta(0.1f)
-					.Value_Lambda([SelectedKeyframes]() -> TOptional<float>
+					SNew(STextBlock)
+					.Text_Lambda([SelectedKeyframes]()
 					{
 						if (SelectedKeyframes.Num() == 0)
-							return TOptional<float>();
+							return FText::FromString(TEXT("0.0"));
 						
 						float FirstValue = SelectedKeyframes[0]->FilmbackSettings.SensorHeight;
 						bool bAllSame = true;
@@ -967,28 +984,11 @@ void FCDGKeyframeContextMenu::FillCameraSubmenu(FMenuBuilder& MenuBuilder, const
 						}
 						
 						if (!bAllSame)
-							return TOptional<float>();
-						return FirstValue;
+							return LOCTEXT("MultipleValues", "(Multiple)");
+						return FText::AsNumber(FirstValue);
 					})
-					.OnValueChanged_Lambda([SelectedKeyframes](float NewValue)
-					{
-						for (ACDGKeyframe* Keyframe : SelectedKeyframes)
-						{
-							Keyframe->FilmbackSettings.SensorHeight = FMath::Max(FCDGCameraFilmbackSettings::SensorHeightMin, NewValue);
-							Keyframe->UpdateVisualizer();
-						}
-						GEditor->RedrawLevelEditingViewports();
-					})
-					.OnValueCommitted_Lambda([SelectedKeyframes](float NewValue, ETextCommit::Type CommitType)
-					{
-						const FScopedTransaction Transaction(LOCTEXT("SetSensorHeight", "Set Sensor Height"));
-						for (ACDGKeyframe* Keyframe : SelectedKeyframes)
-						{
-							Keyframe->Modify();
-							Keyframe->FilmbackSettings.SensorHeight = FMath::Max(FCDGCameraFilmbackSettings::SensorHeightMin, NewValue);
-							Keyframe->UpdateVisualizer();
-						}
-					})
+					.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+					.ToolTipText(LOCTEXT("SensorHeightTooltip", "Calculated from Sensor Width / Aspect Ratio (read-only)"))
 				]
 			],
 			FText::GetEmpty()
@@ -1043,6 +1043,11 @@ void FCDGKeyframeContextMenu::FillCameraSubmenu(FMenuBuilder& MenuBuilder, const
 						for (ACDGKeyframe* Keyframe : SelectedKeyframes)
 						{
 							Keyframe->FilmbackSettings.SensorAspectRatio = FMath::Max(FCDGCameraFilmbackSettings::SensorAspectRatioMin, NewValue);
+							// Update sensor height from width and aspect ratio (height is locked to aspect ratio)
+							if (Keyframe->FilmbackSettings.SensorAspectRatio > 0.0f)
+							{
+								Keyframe->FilmbackSettings.SensorHeight = Keyframe->FilmbackSettings.SensorWidth / Keyframe->FilmbackSettings.SensorAspectRatio;
+							}
 							Keyframe->UpdateVisualizer();
 						}
 						GEditor->RedrawLevelEditingViewports();
@@ -1054,6 +1059,11 @@ void FCDGKeyframeContextMenu::FillCameraSubmenu(FMenuBuilder& MenuBuilder, const
 						{
 							Keyframe->Modify();
 							Keyframe->FilmbackSettings.SensorAspectRatio = FMath::Max(FCDGCameraFilmbackSettings::SensorAspectRatioMin, NewValue);
+							// Update sensor height from width and aspect ratio (height is locked to aspect ratio)
+							if (Keyframe->FilmbackSettings.SensorAspectRatio > 0.0f)
+							{
+								Keyframe->FilmbackSettings.SensorHeight = Keyframe->FilmbackSettings.SensorWidth / Keyframe->FilmbackSettings.SensorAspectRatio;
+							}
 							Keyframe->UpdateVisualizer();
 						}
 					})
@@ -1080,6 +1090,7 @@ void FCDGKeyframeContextMenu::FillCameraSubmenu(FMenuBuilder& MenuBuilder, const
 						Keyframe->Modify();
 						Keyframe->LensSettings.FocalLength = 24.0f;
 						Keyframe->UpdateFOVFromFocalLength();
+						Keyframe->UpdateVisualizer();
 					}
 				})
 			)
@@ -1099,6 +1110,7 @@ void FCDGKeyframeContextMenu::FillCameraSubmenu(FMenuBuilder& MenuBuilder, const
 						Keyframe->Modify();
 						Keyframe->LensSettings.FocalLength = 35.0f;
 						Keyframe->UpdateFOVFromFocalLength();
+						Keyframe->UpdateVisualizer();
 					}
 				})
 			)
@@ -1118,6 +1130,7 @@ void FCDGKeyframeContextMenu::FillCameraSubmenu(FMenuBuilder& MenuBuilder, const
 						Keyframe->Modify();
 						Keyframe->LensSettings.FocalLength = 50.0f;
 						Keyframe->UpdateFOVFromFocalLength();
+						Keyframe->UpdateVisualizer();
 					}
 				})
 			)
@@ -1137,6 +1150,7 @@ void FCDGKeyframeContextMenu::FillCameraSubmenu(FMenuBuilder& MenuBuilder, const
 						Keyframe->Modify();
 						Keyframe->LensSettings.FocalLength = 85.0f;
 						Keyframe->UpdateFOVFromFocalLength();
+						Keyframe->UpdateVisualizer();
 					}
 				})
 			)
@@ -1159,6 +1173,7 @@ void FCDGKeyframeContextMenu::FillCameraSubmenu(FMenuBuilder& MenuBuilder, const
 					{
 						Keyframe->Modify();
 						Keyframe->LensSettings.Aperture = 1.4f;
+						Keyframe->UpdateVisualizer();
 					}
 				})
 			)
@@ -1177,6 +1192,7 @@ void FCDGKeyframeContextMenu::FillCameraSubmenu(FMenuBuilder& MenuBuilder, const
 					{
 						Keyframe->Modify();
 						Keyframe->LensSettings.Aperture = 2.8f;
+						Keyframe->UpdateVisualizer();
 					}
 				})
 			)
@@ -1195,6 +1211,7 @@ void FCDGKeyframeContextMenu::FillCameraSubmenu(FMenuBuilder& MenuBuilder, const
 					{
 						Keyframe->Modify();
 						Keyframe->LensSettings.Aperture = 8.0f;
+						Keyframe->UpdateVisualizer();
 					}
 				})
 			)

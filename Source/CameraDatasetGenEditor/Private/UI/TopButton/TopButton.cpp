@@ -2,6 +2,7 @@
 
 #include "UI/TopButton/TopButton.h"
 #include "UI/TopButton/TopButtonStyle.h"
+#include "UI/TopButtonDropdown/TopButtonDropdown.h"
 #include "ToolMenus.h"
 #include "LogCameraDatasetGenEditor.h"
 
@@ -33,18 +34,21 @@ void FTopButton::ExtendLevelEditorToolbar()
 	
 	FString IconName = FString::Printf(TEXT("TopButton.%s"), *CurrentIconStyleName);
 	
-	Section.AddEntry(FToolMenuEntry::InitToolBarButton(
+	// Use InitComboButton with no primary action - clicking the button opens the dropdown
+	Section.AddEntry(FToolMenuEntry::InitComboButton(
 		"CameraDatasetGenButton",
-		FUIAction(FExecuteAction::CreateRaw(this, &FTopButton::OnButtonClicked)),
+		FUIAction(),  // Empty action - the button only opens the menu
+		FOnGetContent::CreateRaw(this, &FTopButton::OnGetMenuContent),
 		LOCTEXT("TopButton_Label", "Camera Dataset"),
-		LOCTEXT("TopButton_Tooltip", "Open Camera Dataset Generator"),
-		FSlateIcon(FTopButtonStyle::GetStyleSetName(), *IconName)
+		LOCTEXT("TopButton_Tooltip", "Camera Dataset Generator Actions"),
+		FSlateIcon(FTopButtonStyle::GetStyleSetName(), *IconName),
+		false  // bInSimpleComboBox = false means no separate dropdown arrow
 	));
 }
 
-void FTopButton::OnButtonClicked()
+TSharedRef<SWidget> FTopButton::OnGetMenuContent()
 {
-
+	return FTopButtonDropdown::MakeDropdownMenu();
 }
 
 #undef LOCTEXT_NAMESPACE

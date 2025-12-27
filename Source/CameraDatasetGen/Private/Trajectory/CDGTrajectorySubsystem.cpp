@@ -13,6 +13,44 @@
 
 // ==================== UCDGTrajectorySubsystem Implementation ====================
 
+// Define the default color palette (8 light colors in hex format)
+const TArray<FLinearColor> UCDGTrajectorySubsystem::DefaultColorPalette = {
+	FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("ffadad"))),  // Light red/pink
+	FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("ffd6a5"))),  // Light orange
+	FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("fdffb6"))),  // Light yellow
+	FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("caffbf"))),  // Light green
+	FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("9bf6ff"))),  // Light cyan
+	FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("a0c4ff"))),  // Light blue
+	FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("bdb2ff"))),  // Light purple
+	FLinearColor::FromSRGBColor(FColor::FromHex(TEXT("ffc6ff")))   // Light pink/magenta
+};
+
+FLinearColor UCDGTrajectorySubsystem::GetNextTrajectoryColor() const
+{
+	if (DefaultColorPalette.Num() == 0)
+	{
+		return FLinearColor::White;
+	}
+	
+	// Cycle through colors based on current trajectory count
+	const int32 ColorIndex = Trajectories.Num() % DefaultColorPalette.Num();
+	return DefaultColorPalette[ColorIndex];
+}
+
+FLinearColor UCDGTrajectorySubsystem::GetTrajectoryColor(FName TrajectoryName) const
+{
+	if (const TObjectPtr<ACDGTrajectory>* TrajectoryPtr = Trajectories.Find(TrajectoryName))
+	{
+		if (ACDGTrajectory* Trajectory = TrajectoryPtr->Get())
+		{
+			return Trajectory->TrajectoryColor;
+		}
+	}
+	
+	// Return white if trajectory not found
+	return FLinearColor::White;
+}
+
 void UCDGTrajectorySubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
@@ -501,8 +539,25 @@ void UCDGTrajectorySubsystem::RegisterTrajectory(ACDGTrajectory* Trajectory)
 		Trajectory->TrajectoryName = UniqueName;
 	}
 
+	// Assign color from palette before adding to map
+	Trajectory->TrajectoryColor = GetNextTrajectoryColor();
+	
 	Trajectories.Add(Trajectory->TrajectoryName, Trajectory);
-	UE_LOG(LogCameraDatasetGen, Verbose, TEXT("Registered trajectory: %s"), *Trajectory->TrajectoryName.ToString());
+	
+	// Update trajectory visualizer with new color
+	Trajectory->UpdateVisualizer();
+	
+	// Update all keyframes in this trajectory to use the new color
+	for (const TObjectPtr<ACDGKeyframe>& Keyframe : Trajectory->Keyframes)
+	{
+		if (Keyframe)
+		{
+			Keyframe->UpdateVisualizer();
+		}
+	}
+	
+	UE_LOG(LogCameraDatasetGen, Verbose, TEXT("Registered trajectory: %s"), 
+		*Trajectory->TrajectoryName.ToString());
 }
 
 void UCDGTrajectorySubsystem::UnregisterTrajectory(ACDGTrajectory* Trajectory)
@@ -555,6 +610,9 @@ void UCDGTrajectorySubsystem::AddKeyframeToTrajectory(ACDGKeyframe* Keyframe)
 	Trajectory->AddKeyframe(Keyframe);
 	Trajectory->MarkNeedsRebuild();
 	Trajectory->RebuildSpline();
+	
+	// Update keyframe visualizer to use trajectory color
+	Keyframe->UpdateVisualizer();
 }
 
 void UCDGTrajectorySubsystem::RemoveKeyframeFromTrajectory(ACDGKeyframe* Keyframe, FName TrajectoryName)
@@ -611,4 +669,101 @@ FName UCDGTrajectorySubsystem::GenerateUniqueTrajectoryName(const FString& Prefi
 	while (HasTrajectory(UniqueName));
 	
 	return UniqueName;
+}
+
+// ==================== VISUALIZER CONTROL ====================
+
+void UCDGTrajectorySubsystem::DisableAllVisualizers()
+{
+	// Clear previous saved states
+	SavedTrajectoryVisualizerStates.Empty();
+	SavedKeyframeVisualizerStates.Empty();
+
+	// Save and disable trajectory visualizers
+	for (const auto& Pair : Trajectories)
+	{
+		if (ACDGTrajectory* Trajectory = Pair.Value.Get())
+		{
+			// Save current state
+			SavedTrajectoryVisualizerStates.Add(Pair.Key, Trajectory->bShowTrajectory);
+			
+			// Disable visualizer
+			Trajectory->bShowTrajectory = false;
+			Trajectory->UpdateVisualizer();
+		}
+	}
+
+	// Save and disable keyframe visualizers
+	for (const TObjectPtr<ACDGKeyframe>& Keyframe : AllKeyframes)
+	{
+		if (Keyframe.Get())
+		{
+			// Save current states (frustum and trajectory line)
+			SavedKeyframeVisualizerStates.Add(Keyframe, TPair<bool, bool>(Keyframe->bShowCameraFrustum, Keyframe->bShowTrajectoryLine));
+			
+			// Disable visualizers
+			Keyframe->bShowCameraFrustum = false;
+			Keyframe->bShowTrajectoryLine = false;
+			Keyframe->UpdateVisualizer();
+		}
+	}
+	
+	UE_LOG(LogCameraDatasetGen, Verbose, TEXT("Disabled all visualizers (Trajectories: %d, Keyframes: %d)"), 
+		SavedTrajectoryVisualizerStates.Num(), SavedKeyframeVisualizerStates.Num());
+}
+
+void UCDGTrajectorySubsystem::EnableAllVisualizers()
+{
+	// Enable all trajectory visualizers
+	for (const auto& Pair : Trajectories)
+	{
+		if (ACDGTrajectory* Trajectory = Pair.Value.Get())
+		{
+			Trajectory->bShowTrajectory = true;
+			Trajectory->UpdateVisualizer();
+		}
+	}
+
+	// Enable all keyframe visualizers
+	for (const TObjectPtr<ACDGKeyframe>& Keyframe : AllKeyframes)
+	{
+		if (Keyframe.Get())
+		{
+			Keyframe->bShowCameraFrustum = true;
+			Keyframe->bShowTrajectoryLine = true;
+			Keyframe->UpdateVisualizer();
+		}
+	}
+	
+	UE_LOG(LogCameraDatasetGen, Verbose, TEXT("Enabled all visualizers"));
+}
+
+void UCDGTrajectorySubsystem::RestoreVisualizerStates()
+{
+	// Restore trajectory visualizers
+	for (const auto& Pair : SavedTrajectoryVisualizerStates)
+	{
+		if (ACDGTrajectory* Trajectory = GetTrajectory(Pair.Key))
+		{
+			Trajectory->bShowTrajectory = Pair.Value;
+			Trajectory->UpdateVisualizer();
+		}
+	}
+
+	// Restore keyframe visualizers
+	for (const auto& Pair : SavedKeyframeVisualizerStates)
+	{
+		if (ACDGKeyframe* Keyframe = Pair.Key.Get())
+		{
+			Keyframe->bShowCameraFrustum = Pair.Value.Key;
+			Keyframe->bShowTrajectoryLine = Pair.Value.Value;
+			Keyframe->UpdateVisualizer();
+		}
+	}
+	
+	// Clear saved states
+	SavedTrajectoryVisualizerStates.Empty();
+	SavedKeyframeVisualizerStates.Empty();
+	
+	UE_LOG(LogCameraDatasetGen, Verbose, TEXT("Restored visualizer states"));
 }

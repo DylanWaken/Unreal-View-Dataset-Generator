@@ -4,6 +4,7 @@
 #include "UI/TopButton/TopButtonStyle.h"
 #include "UI/TopButton/TopButton.h"
 #include "UI/KeyFrameEditor/CDGKeyframeContextMenu.h"
+#include "UI/CameraPreviewEditor/CDGCameraPreviewContextMenu.h"
 #include "LogCameraDatasetGenEditor.h"
 
 #define LOCTEXT_NAMESPACE "FCameraDatasetGenEditorModule"
@@ -40,6 +41,13 @@ void FCameraDatasetGenEditorModule::ShutdownModule()
 		ModuleLoadedDelegateHandle.Reset();
 	}
 
+	// Shutdown the camera preview context menu
+	if (CameraPreviewContextMenu.IsValid())
+	{
+		CameraPreviewContextMenu->Shutdown();
+		CameraPreviewContextMenu.Reset();
+	}
+
 	// Shutdown the keyframe context menu
 	if (KeyframeContextMenu.IsValid())
 	{
@@ -65,6 +73,15 @@ void FCameraDatasetGenEditorModule::OnModulesChanged(FName InModuleName, EModule
 			KeyframeContextMenu->Initialize();
 			
 			UE_LOG(LogCameraDatasetGenEditor, Log, TEXT("CDGKeyframe context menu registered successfully"));
+		}
+
+		// Initialize the camera preview context menu now that LevelEditor is loaded
+		if (!CameraPreviewContextMenu.IsValid())
+		{
+			CameraPreviewContextMenu = MakeShared<FCDGCameraPreviewContextMenu>();
+			CameraPreviewContextMenu->Initialize();
+			
+			UE_LOG(LogCameraDatasetGenEditor, Log, TEXT("CDGCameraPreview context menu registered successfully"));
 		}
 	}
 }
