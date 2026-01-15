@@ -22,7 +22,7 @@ public class CameraDatasetGen : ModuleRules
 			);
 			
 		
-	PublicDependencyModuleNames.AddRange(
+		PublicDependencyModuleNames.AddRange(
 		new string[]
 		{
 			"Core",

@@ -53,6 +53,11 @@ private:
 	void FillInterpolationSubmenu(FMenuBuilder& MenuBuilder, const TArray<ACDGKeyframe*> SelectedKeyframes);
 
 	/**
+	 * Create submenu for timing settings
+	 */
+	void FillTimingSubmenu(FMenuBuilder& MenuBuilder, const TArray<ACDGKeyframe*> SelectedKeyframes);
+
+	/**
 	 * Create submenu for visualization settings
 	 */
 	void FillVisualizationSubmenu(FMenuBuilder& MenuBuilder, const TArray<ACDGKeyframe*> SelectedKeyframes);

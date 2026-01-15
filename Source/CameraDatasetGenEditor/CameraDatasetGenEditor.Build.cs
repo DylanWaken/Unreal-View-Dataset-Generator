@@ -27,6 +27,8 @@ public class CameraDatasetGenEditor : ModuleRules
 			{
 				"Core",
 				"CameraDatasetGen",
+				"LevelSequence",
+				"MovieScene",
 				// ... add other public dependencies that you statically link with here ...
 			}
 			);
@@ -46,6 +48,10 @@ public class CameraDatasetGenEditor : ModuleRules
 			"ToolMenus",  // Required for UToolMenus toolbar extension
 			"PropertyEditor",  // Required for details panel access
 			"RenderCore",  // Required for GWhiteTexture
+			"LevelSequenceEditor",
+			"AssetTools",
+			"AssetRegistry",
+			"EditorStyle",
 			// ... add private dependencies that you statically link with here ...	
 		}
 		);

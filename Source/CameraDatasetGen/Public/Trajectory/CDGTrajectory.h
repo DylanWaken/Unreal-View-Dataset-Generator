@@ -141,6 +141,10 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "CDGTrajectory")
 	FTransform SampleTransform(float Alpha) const;
 
+	/** Get the total duration of the trajectory in seconds */
+	UFUNCTION(BlueprintCallable, Category = "CDGTrajectory")
+	float GetTrajectoryDuration() const;
+
 	// ==================== UTILITY ====================
 
 	/** Sort keyframes by their OrderInTrajectory */

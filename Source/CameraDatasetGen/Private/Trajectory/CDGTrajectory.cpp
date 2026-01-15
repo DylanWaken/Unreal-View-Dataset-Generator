@@ -346,6 +346,41 @@ FTransform ACDGTrajectory::SampleTransform(float Alpha) const
 	return SplineComponent->GetTransformAtDistanceAlongSpline(Distance, ESplineCoordinateSpace::World);
 }
 
+float ACDGTrajectory::GetTrajectoryDuration() const
+{
+	if (Keyframes.Num() == 0)
+	{
+		return 0.0f;
+	}
+
+	// Get sorted keyframes to calculate duration in order
+	TArray<ACDGKeyframe*> SortedKeyframes = GetSortedKeyframes();
+	
+	float TotalDuration = 0.0f;
+
+	for (int32 i = 0; i < SortedKeyframes.Num(); ++i)
+	{
+		if (!SortedKeyframes[i])
+		{
+			continue;
+		}
+
+		if (i == 0)
+		{
+			// First keyframe: only count stationary duration
+			TotalDuration += SortedKeyframes[i]->TimeAtCurrentFrame;
+		}
+		else
+		{
+			// Subsequent keyframes: count both travel and stationary durations
+			TotalDuration += SortedKeyframes[i]->TimeToCurrentFrame;
+			TotalDuration += SortedKeyframes[i]->TimeAtCurrentFrame;
+		}
+	}
+
+	return TotalDuration;
+}
+
 // ==================== UTILITY ====================
 
 void ACDGTrajectory::SortKeyframes()
@@ -554,7 +589,7 @@ void ACDGTrajectory::UpdateVisualizer()
 		// Create or recreate render state
 		if (!bHasRenderState)
 		{
-			UE_LOG(LogCameraDatasetGen, Warning, TEXT("Visualizer has no render state, creating now"));
+			// UE_LOG(LogCameraDatasetGen, Warning, TEXT("Visualizer has no render state, creating now"));
 			
 			// Make sure component is added to world before creating render state
 			if (UWorld* World = GetWorld())
@@ -565,11 +600,11 @@ void ACDGTrajectory::UpdateVisualizer()
 				}
 			}
 			
-			VisualizerComponent->CreateRenderState_Concurrent(nullptr);
+			VisualizerComponent->MarkRenderStateDirty();
 		}
 		else
 		{
-			VisualizerComponent->RecreateRenderState_Concurrent();
+			VisualizerComponent->MarkRenderStateDirty();
 		}
 	}
 #endif

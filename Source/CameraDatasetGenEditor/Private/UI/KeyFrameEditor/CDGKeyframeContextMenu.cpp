@@ -127,6 +127,15 @@ void FCDGKeyframeContextMenu::FillKeyframeContextMenu(FMenuBuilder& MenuBuilder,
 			FSlateIcon("TopButtonStyle", "TopButton.CustomIcon.Small")
 		);
 
+		// Add submenu for Timing settings
+		MenuBuilder.AddSubMenu(
+			LOCTEXT("TimingSettings", "Timing"),
+			LOCTEXT("TimingSettingsTooltip", "Edit timing and speed interpolation"),
+			FNewMenuDelegate::CreateSP(this, &FCDGKeyframeContextMenu::FillTimingSubmenu, SelectedKeyframes),
+			false,
+			FSlateIcon("TopButtonStyle", "TopButton.CustomIcon.Small")
+		);
+
 		// Add submenu for Visualization settings
 		MenuBuilder.AddSubMenu(
 			LOCTEXT("VisualizationSettings", "Visualization"),
@@ -1546,6 +1555,248 @@ void FCDGKeyframeContextMenu::FillInterpolationSubmenu(FMenuBuilder& MenuBuilder
 			),
 			NAME_None,
 			EUserInterfaceActionType::ToggleButton
+		);
+	}
+	MenuBuilder.EndSection();
+}
+
+void FCDGKeyframeContextMenu::FillTimingSubmenu(FMenuBuilder& MenuBuilder, const TArray<ACDGKeyframe*> SelectedKeyframes)
+{
+	MenuBuilder.BeginSection("TimingProperties", LOCTEXT("TimingPropertiesSection", "Timing Properties"));
+	{
+		// Time To Current Frame
+		MenuBuilder.AddWidget(
+			SNew(SBox)
+			.Padding(FMargin(4.0f, 2.0f))
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				.Padding(0, 0, 8, 0)
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("TimeToCurrentFrameLabel", "Duration from Prev (s):"))
+					.MinDesiredWidth(140.0f)
+				]
+				+ SHorizontalBox::Slot()
+				.FillWidth(1.0f)
+				[
+					SNew(SNumericEntryBox<float>)
+					.MinDesiredValueWidth(100.0f)
+					.AllowSpin(true)
+					.MinValue(0.0f)
+					.MaxValue(9999.0f)
+					.MinSliderValue(0.0f)
+					.MaxSliderValue(10.0f)
+					.Delta(0.1f)
+					.Value_Lambda([SelectedKeyframes]() -> TOptional<float>
+					{
+						if (SelectedKeyframes.Num() == 0)
+							return TOptional<float>();
+						
+						float FirstValue = SelectedKeyframes[0]->TimeToCurrentFrame;
+						bool bAllSame = true;
+						for (ACDGKeyframe* Keyframe : SelectedKeyframes)
+						{
+							if (!FMath::IsNearlyEqual(Keyframe->TimeToCurrentFrame, FirstValue))
+							{
+								bAllSame = false;
+								break;
+							}
+						}
+						
+						if (!bAllSame)
+							return TOptional<float>();
+						return FirstValue;
+					})
+					.OnValueChanged_Lambda([SelectedKeyframes](float NewValue)
+					{
+						for (ACDGKeyframe* Keyframe : SelectedKeyframes)
+						{
+							Keyframe->TimeToCurrentFrame = FMath::Max(0.0f, NewValue);
+							Keyframe->NotifyTrajectorySubsystem();
+						}
+					})
+					.OnValueCommitted_Lambda([SelectedKeyframes](float NewValue, ETextCommit::Type CommitType)
+					{
+						const FScopedTransaction Transaction(LOCTEXT("SetTimeToCurrentFrame", "Set Duration from Previous"));
+						for (ACDGKeyframe* Keyframe : SelectedKeyframes)
+						{
+							Keyframe->Modify();
+							Keyframe->TimeToCurrentFrame = FMath::Max(0.0f, NewValue);
+							Keyframe->NotifyTrajectorySubsystem();
+						}
+					})
+				]
+			],
+			FText::GetEmpty()
+		);
+
+		// Time At Current Frame
+		MenuBuilder.AddWidget(
+			SNew(SBox)
+			.Padding(FMargin(4.0f, 2.0f))
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				.Padding(0, 0, 8, 0)
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("TimeAtCurrentFrameLabel", "Wait Duration (s):"))
+					.MinDesiredWidth(140.0f)
+				]
+				+ SHorizontalBox::Slot()
+				.FillWidth(1.0f)
+				[
+					SNew(SNumericEntryBox<float>)
+					.MinDesiredValueWidth(100.0f)
+					.AllowSpin(true)
+					.MinValue(0.0f)
+					.MaxValue(9999.0f)
+					.MinSliderValue(0.0f)
+					.MaxSliderValue(10.0f)
+					.Delta(0.1f)
+					.Value_Lambda([SelectedKeyframes]() -> TOptional<float>
+					{
+						if (SelectedKeyframes.Num() == 0)
+							return TOptional<float>();
+						
+						float FirstValue = SelectedKeyframes[0]->TimeAtCurrentFrame;
+						bool bAllSame = true;
+						for (ACDGKeyframe* Keyframe : SelectedKeyframes)
+						{
+							if (!FMath::IsNearlyEqual(Keyframe->TimeAtCurrentFrame, FirstValue))
+							{
+								bAllSame = false;
+								break;
+							}
+						}
+						
+						if (!bAllSame)
+							return TOptional<float>();
+						return FirstValue;
+					})
+					.OnValueChanged_Lambda([SelectedKeyframes](float NewValue)
+					{
+						for (ACDGKeyframe* Keyframe : SelectedKeyframes)
+						{
+							Keyframe->TimeAtCurrentFrame = FMath::Max(0.0f, NewValue);
+							Keyframe->NotifyTrajectorySubsystem();
+						}
+					})
+					.OnValueCommitted_Lambda([SelectedKeyframes](float NewValue, ETextCommit::Type CommitType)
+					{
+						const FScopedTransaction Transaction(LOCTEXT("SetTimeAtCurrentFrame", "Set Wait Duration"));
+						for (ACDGKeyframe* Keyframe : SelectedKeyframes)
+						{
+							Keyframe->Modify();
+							Keyframe->TimeAtCurrentFrame = FMath::Max(0.0f, NewValue);
+							Keyframe->NotifyTrajectorySubsystem();
+						}
+					})
+				]
+			],
+			FText::GetEmpty()
+		);
+
+		// Speed Interpolation Mode
+		MenuBuilder.AddWidget(
+			SNew(SBox)
+			.Padding(FMargin(4.0f, 2.0f))
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				.Padding(0, 0, 8, 0)
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("SpeedInterpolationLabel", "Speed Interpolation:"))
+					.MinDesiredWidth(140.0f)
+				]
+				+ SHorizontalBox::Slot()
+				.FillWidth(1.0f)
+				[
+					SNew(SComboButton)
+					.OnGetMenuContent_Lambda([SelectedKeyframes]()
+					{
+						FMenuBuilder MenuBuilder(true, nullptr);
+
+						auto AddMenuEntry = [&](ECDGSpeedInterpolationMode Mode, const FText& Label, const FText& Tooltip)
+						{
+							MenuBuilder.AddMenuEntry(
+								Label,
+								Tooltip,
+								FSlateIcon(),
+								FUIAction(
+									FExecuteAction::CreateLambda([SelectedKeyframes, Mode]()
+									{
+										const FScopedTransaction Transaction(LOCTEXT("SetSpeedInterpolation", "Set Speed Interpolation"));
+										for (ACDGKeyframe* Keyframe : SelectedKeyframes)
+										{
+											Keyframe->Modify();
+											Keyframe->SpeedInterpolationMode = Mode;
+											Keyframe->NotifyTrajectorySubsystem();
+										}
+									}),
+									FCanExecuteAction(),
+									FIsActionChecked::CreateLambda([SelectedKeyframes, Mode]()
+									{
+										return SelectedKeyframes.Num() > 0 && SelectedKeyframes[0]->SpeedInterpolationMode == Mode;
+									})
+								),
+								NAME_None,
+								EUserInterfaceActionType::RadioButton
+							);
+						};
+
+						AddMenuEntry(ECDGSpeedInterpolationMode::Linear, LOCTEXT("SpeedLinear", "Linear"), LOCTEXT("SpeedLinearTooltip", "Constant speed"));
+						AddMenuEntry(ECDGSpeedInterpolationMode::Cubic, LOCTEXT("SpeedCubic", "Cubic (Smooth)"), LOCTEXT("SpeedCubicTooltip", "Smooth acceleration/deceleration"));
+						AddMenuEntry(ECDGSpeedInterpolationMode::Constant, LOCTEXT("SpeedConstant", "Constant"), LOCTEXT("SpeedConstantTooltip", "Instant change"));
+						AddMenuEntry(ECDGSpeedInterpolationMode::SlowIn, LOCTEXT("SpeedSlowIn", "Slow In"), LOCTEXT("SpeedSlowInTooltip", "Decelerate into keyframe"));
+						AddMenuEntry(ECDGSpeedInterpolationMode::SlowOut, LOCTEXT("SpeedSlowOut", "Slow Out"), LOCTEXT("SpeedSlowOutTooltip", "Accelerate out of keyframe"));
+						AddMenuEntry(ECDGSpeedInterpolationMode::SlowInOut, LOCTEXT("SpeedSlowInOut", "Slow In/Out"), LOCTEXT("SpeedSlowInOutTooltip", "Ease in and ease out"));
+
+						return MenuBuilder.MakeWidget();
+					})
+					.ButtonContent()
+					[
+						SNew(STextBlock)
+						.Text_Lambda([SelectedKeyframes]()
+						{
+							if (SelectedKeyframes.Num() == 0) return LOCTEXT("None", "None");
+							
+							ECDGSpeedInterpolationMode Mode = SelectedKeyframes[0]->SpeedInterpolationMode;
+							bool bAllSame = true;
+							for (ACDGKeyframe* Keyframe : SelectedKeyframes)
+							{
+								if (Keyframe->SpeedInterpolationMode != Mode)
+								{
+									bAllSame = false;
+									break;
+								}
+							}
+							
+							if (!bAllSame) return LOCTEXT("MultipleValues", "(Multiple)");
+							
+							switch (Mode)
+							{
+								case ECDGSpeedInterpolationMode::Linear: return LOCTEXT("SpeedLinear", "Linear");
+								case ECDGSpeedInterpolationMode::Cubic: return LOCTEXT("SpeedCubic", "Cubic (Smooth)");
+								case ECDGSpeedInterpolationMode::Constant: return LOCTEXT("SpeedConstant", "Constant");
+								case ECDGSpeedInterpolationMode::SlowIn: return LOCTEXT("SpeedSlowIn", "Slow In");
+								case ECDGSpeedInterpolationMode::SlowOut: return LOCTEXT("SpeedSlowOut", "Slow Out");
+								case ECDGSpeedInterpolationMode::SlowInOut: return LOCTEXT("SpeedSlowInOut", "Slow In/Out");
+								default: return LOCTEXT("Unknown", "Unknown");
+							}
+						})
+					]
+				]
+			],
+			FText::GetEmpty()
 		);
 	}
 	MenuBuilder.EndSection();

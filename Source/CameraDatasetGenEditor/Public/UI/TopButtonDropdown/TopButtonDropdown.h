@@ -24,5 +24,22 @@ private:
 	 * Spawns a new CDGKeyframe actor in the editor world
 	 */
 	static void OnAddNewKeyframe();
-};
 
+	/**
+	 * Called when "Initialize Level Sequence" is clicked
+	 * Creates the unique Level Sequence for this level if it doesn't exist
+	 */
+	static void OnInitLevelSequence();
+
+	/**
+	 * Called when "Delete Level Sequence" is clicked
+	 * Deletes the unique Level Sequence for this level
+	 */
+	static void OnDeleteLevelSequence();
+
+	/**
+	 * Called when "Export to Level Sequence" is clicked
+	 * Opens the export window
+	 */
+	static void OnExportToLevelSequence();
+};

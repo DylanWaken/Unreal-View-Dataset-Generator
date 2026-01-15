@@ -219,7 +219,10 @@ void ACDGKeyframe::PostEditChangeProperty(FPropertyChangedEvent& PropertyChanged
 		}
 	}
 	// Notify trajectory subsystem of other changes
-	else if (PropertyName == TEXT("InterpolationSettings"))
+	else if (PropertyName == TEXT("InterpolationSettings") ||
+	         PropertyName == GET_MEMBER_NAME_CHECKED(ACDGKeyframe, TimeToCurrentFrame) ||
+	         PropertyName == GET_MEMBER_NAME_CHECKED(ACDGKeyframe, TimeAtCurrentFrame) ||
+	         PropertyName == GET_MEMBER_NAME_CHECKED(ACDGKeyframe, SpeedInterpolationMode))
 	{
 		NotifyTrajectorySubsystem();
 	}

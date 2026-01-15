@@ -1,12 +1,15 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "UI/TopButtonDropdown/TopButtonDropdown.h"
+#include "UI/LevelSeqExporterWindow/CDGLevelSeqExporter.h"
 #include "Trajectory/CDGKeyframe.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Styling/AppStyle.h"
 #include "Editor.h"
 #include "LevelEditorViewport.h"
 #include "LogCameraDatasetGenEditor.h"
+#include "LevelSequenceInterface/CDGLevelSeqSubsystem.h"
+#include "Engine/World.h"
 
 #define LOCTEXT_NAMESPACE "TopButtonDropdown"
 
@@ -21,6 +24,30 @@ TSharedRef<SWidget> FTopButtonDropdown::MakeDropdownMenu()
 		LOCTEXT("AddNewKeyframe_Tooltip", "Spawn a new CDGKeyframe actor at the viewport camera location"),
 		FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Plus"),
 		FUIAction(FExecuteAction::CreateStatic(&FTopButtonDropdown::OnAddNewKeyframe))
+	);
+
+	// Add "Initialize Level Sequence" menu entry
+	MenuBuilder.AddMenuEntry(
+		LOCTEXT("InitLevelSequence_Label", "Initialize Level Sequence"),
+		LOCTEXT("InitLevelSequence_Tooltip", "Create or load the CDG_<LevelName>_SEQ Level Sequence asset"),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Plus"),
+		FUIAction(FExecuteAction::CreateStatic(&FTopButtonDropdown::OnInitLevelSequence))
+	);
+
+	// Add "Delete Level Sequence" menu entry
+	MenuBuilder.AddMenuEntry(
+		LOCTEXT("DeleteLevelSequence_Label", "Delete Level Sequence"),
+		LOCTEXT("DeleteLevelSequence_Tooltip", "Delete the CDG_<LevelName>_SEQ Level Sequence asset"),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Delete"),
+		FUIAction(FExecuteAction::CreateStatic(&FTopButtonDropdown::OnDeleteLevelSequence))
+	);
+
+	// Add "Export to Level Sequence" menu entry
+	MenuBuilder.AddMenuEntry(
+		LOCTEXT("ExportToLevelSequence_Label", "Export to Level Sequence"),
+		LOCTEXT("ExportToLevelSequence_Tooltip", "Open window to export trajectories to the Level Sequence"),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Share"),
+		FUIAction(FExecuteAction::CreateStatic(&FTopButtonDropdown::OnExportToLevelSequence))
 	);
 
 	return MenuBuilder.MakeWidget();
@@ -80,5 +107,43 @@ void FTopButtonDropdown::OnAddNewKeyframe()
 	}
 }
 
-#undef LOCTEXT_NAMESPACE
+void FTopButtonDropdown::OnInitLevelSequence()
+{
+	if (!GEditor) return;
+	
+	UWorld* World = GEditor->GetEditorWorldContext().World();
+	if (!World) return;
 
+	if (UCDGLevelSeqSubsystem* SeqSubsystem = World->GetSubsystem<UCDGLevelSeqSubsystem>())
+	{
+		SeqSubsystem->InitLevelSequence();
+	}
+	else
+	{
+		UE_LOG(LogCameraDatasetGenEditor, Error, TEXT("Failed to get CDGLevelSeqSubsystem"));
+	}
+}
+
+void FTopButtonDropdown::OnDeleteLevelSequence()
+{
+	if (!GEditor) return;
+	
+	UWorld* World = GEditor->GetEditorWorldContext().World();
+	if (!World) return;
+
+	if (UCDGLevelSeqSubsystem* SeqSubsystem = World->GetSubsystem<UCDGLevelSeqSubsystem>())
+	{
+		SeqSubsystem->DeleteLevelSequence();
+	}
+	else
+	{
+		UE_LOG(LogCameraDatasetGenEditor, Error, TEXT("Failed to get CDGLevelSeqSubsystem"));
+	}
+}
+
+void FTopButtonDropdown::OnExportToLevelSequence()
+{
+	CDGLevelSeqExporter::OpenWindow();
+}
+
+#undef LOCTEXT_NAMESPACE

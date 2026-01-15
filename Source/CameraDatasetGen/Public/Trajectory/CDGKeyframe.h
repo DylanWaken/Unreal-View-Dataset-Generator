@@ -33,6 +33,20 @@ enum class ECDGTangentMode : uint8
 };
 
 /**
+ * Speed interpolation mode for movement between keyframes
+ */
+UENUM(BlueprintType)
+enum class ECDGSpeedInterpolationMode : uint8
+{
+	Linear UMETA(DisplayName = "Linear"),
+	Cubic UMETA(DisplayName = "Cubic (Smooth)"),
+	Constant UMETA(DisplayName = "Constant"),
+	SlowIn UMETA(DisplayName = "Slow In"),
+	SlowOut UMETA(DisplayName = "Slow Out"),
+	SlowInOut UMETA(DisplayName = "Slow In/Out")
+};
+
+/**
  * Camera lens settings matching UCineCameraComponent
  * All properties can be keyframed and exported to Level Sequence
  */
@@ -243,6 +257,20 @@ public:
 	/** Time/duration hint for this keyframe (in seconds, for export reference) */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trajectory", meta = (ClampMin = "0.0", ClampMax = "9999.0", UIMin = "0.0", UIMax = "60.0"))
 	float TimeHint = 0.0f;
+
+	// ==================== TIMING ====================
+
+	/** Duration from previous keyframe to current (seconds) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Timing", meta = (ClampMin = "0.0"))
+	float TimeToCurrentFrame = 0.5f;
+
+	/** Duration to remain stationary at current keyframe (seconds) */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Timing", meta = (ClampMin = "0.0"))
+	float TimeAtCurrentFrame = 0.0f;
+
+	/** Speed interpolation mode for movement to this keyframe */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Timing")
+	ECDGSpeedInterpolationMode SpeedInterpolationMode = ECDGSpeedInterpolationMode::Linear;
 
 	// ==================== CAMERA PARAMETERS ====================
 	
