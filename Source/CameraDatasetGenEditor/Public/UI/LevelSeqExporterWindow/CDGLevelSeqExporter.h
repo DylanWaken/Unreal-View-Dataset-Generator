@@ -4,7 +4,9 @@
 
 #include "CoreMinimal.h"
 #include "Widgets/SCompoundWidget.h"
-#include "Widgets/Views/SListView.h"
+#include "Widgets/Input/SSpinBox.h"
+#include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Input/SMultiLineEditableTextBox.h"
 #include "Trajectory/CDGTrajectory.h"
 
 class ACDGTrajectory;
@@ -65,7 +67,12 @@ private:
     TSharedPtr<STextBlock> SummaryNameText;
     TSharedPtr<STextBlock> SummaryDurationText;
     TSharedPtr<STextBlock> SummaryKeyframeCountText;
+    TSharedPtr<SMultiLineEditableTextBox> SummaryPromptText;
     TSharedPtr<STextBlock> SummaryInfoText; // General status or instructions
+
+    /** Export Settings */
+    TSharedPtr<SSpinBox<int32>> FPSInput;
+    TSharedPtr<SCheckBox> ClearSequenceCheckBox;
 };
 
 /**

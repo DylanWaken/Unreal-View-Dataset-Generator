@@ -29,6 +29,8 @@ public class CameraDatasetGenEditor : ModuleRules
 				"CameraDatasetGen",
 				"LevelSequence",
 				"MovieScene",
+				"MovieSceneTracks",
+				"CinematicCamera",
 				// ... add other public dependencies that you statically link with here ...
 			}
 			);

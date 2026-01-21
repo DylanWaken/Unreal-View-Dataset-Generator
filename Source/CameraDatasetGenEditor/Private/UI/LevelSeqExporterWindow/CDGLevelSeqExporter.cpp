@@ -1,17 +1,43 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "UI/LevelSeqExporterWindow/CDGLevelSeqExporter.h"
+#include "Trajectory/CDGKeyframe.h"
+#include "LevelSequenceInterface/CDGLevelSeqSubsystem.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SSplitter.h"
 #include "Widgets/Layout/SUniformGridPanel.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Input/SSpinBox.h"
+#include "Widgets/Input/SMultiLineEditableTextBox.h"
+#include "Widgets/Views/SListView.h"
+#include "Widgets/Views/STableRow.h"
 #include "Widgets/Text/STextBlock.h"
 #include "EditorStyleSet.h"
 #include "EngineUtils.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Interfaces/IMainFrameModule.h"
+#include "AssetToolsModule.h"
+#include "IAssetTools.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "LevelSequence.h"
+#include "MovieScene.h"
+#include "MovieSceneTrack.h"
+#include "Tracks/MovieSceneCameraCutTrack.h"
+#include "Tracks/MovieScene3DTransformTrack.h"
+#include "Tracks/MovieSceneFloatTrack.h"
+#include "Tracks/MovieSceneCinematicShotTrack.h"
+#include "Sections/MovieSceneCameraCutSection.h"
+#include "Sections/MovieScene3DTransformSection.h"
+#include "Sections/MovieSceneFloatSection.h"
+#include "Sections/MovieSceneSubSection.h"
+#include "Channels/MovieSceneFloatChannel.h"
+#include "Channels/MovieSceneDoubleChannel.h"
+#include "CineCameraActor.h"
+#include "CineCameraComponent.h"
+#include "Factories/Factory.h"
+#include "UObject/SavePackage.h"
 
 #define LOCTEXT_NAMESPACE "CDGLevelSeqExporter"
 
@@ -166,6 +192,33 @@ void SLevelSeqExporterWindow::Construct(const FArguments& InArgs, const TArray<A
                             ]
                         ]
 
+                        // Text Prompt
+                        + SVerticalBox::Slot()
+                        .AutoHeight()
+                        .Padding(0, 10, 0, 2)
+                        [
+                            SNew(STextBlock)
+                            .Text(LOCTEXT("SummaryPromptLabel", "Text Prompt:"))
+                            .Font(FAppStyle::GetFontStyle("PropertyWindow.NormalFont"))
+                        ]
+                        + SVerticalBox::Slot()
+                        .AutoHeight()
+                        .Padding(0, 2)
+                        .MaxHeight(100.0f) 
+                        [
+                            SAssignNew(SummaryPromptText, SMultiLineEditableTextBox)
+                            .HintText(LOCTEXT("PromptHint", "Enter text prompt here..."))
+                            .OnTextCommitted_Lambda([this](const FText& NewText, ETextCommit::Type CommitType)
+                            {
+                                if (SelectedItem.IsValid() && SelectedItem->Trajectory.IsValid())
+                                {
+                                    ACDGTrajectory* Traj = SelectedItem->Trajectory.Get();
+                                    Traj->Modify();
+                                    Traj->TextPrompt = NewText.ToString();
+                                }
+                            })
+                        ]
+
                          // Instructions/Status
                         + SVerticalBox::Slot()
                         .FillHeight(1.0f)
@@ -176,6 +229,44 @@ void SLevelSeqExporterWindow::Construct(const FArguments& InArgs, const TArray<A
                              .AutoWrapText(true)
                              .ColorAndOpacity(FSlateColor::UseSubduedForeground())
                         ]
+                    ]
+                ]
+            ]
+            
+            // Settings
+            + SVerticalBox::Slot()
+            .AutoHeight()
+            .Padding(0, 10, 0, 0)
+            [
+                SNew(SHorizontalBox)
+                + SHorizontalBox::Slot()
+                .AutoWidth()
+                .Padding(0, 0, 10, 0)
+                .VAlign(VAlign_Center)
+                [
+                    SNew(STextBlock)
+                    .Text(LOCTEXT("FPSLabel", "FPS:"))
+                ]
+                + SHorizontalBox::Slot()
+                .AutoWidth()
+                .Padding(0, 0, 20, 0)
+                [
+                    SAssignNew(FPSInput, SSpinBox<int32>)
+                    .MinValue(1)
+                    .MaxValue(240)
+                    .Value(30)
+                    .MinSliderValue(1)
+                    .MaxSliderValue(120)
+                ]
+                + SHorizontalBox::Slot()
+                .AutoWidth()
+                .VAlign(VAlign_Center)
+                [
+                    SAssignNew(ClearSequenceCheckBox, SCheckBox)
+                    .IsChecked(ECheckBoxState::Unchecked)
+                    [
+                        SNew(STextBlock)
+                        .Text(LOCTEXT("ClearSequenceLabel", "Clear Level Sequence"))
                     ]
                 ]
             ]
@@ -267,6 +358,8 @@ void SLevelSeqExporterWindow::UpdateSummary()
         SummaryNameText->SetText(FText::FromString(Traj->TrajectoryName.ToString()));
         SummaryDurationText->SetText(FText::FromString(FString::Printf(TEXT("%.2fs"), Traj->GetTrajectoryDuration())));
         SummaryKeyframeCountText->SetText(FText::AsNumber(Traj->GetKeyframeCount()));
+        SummaryPromptText->SetText(FText::FromString(Traj->TextPrompt));
+        SummaryPromptText->SetIsReadOnly(false);
         SummaryInfoText->SetText(FText::GetEmpty());
     }
     else
@@ -274,6 +367,8 @@ void SLevelSeqExporterWindow::UpdateSummary()
         SummaryNameText->SetText(LOCTEXT("NoSelection", "None"));
         SummaryDurationText->SetText(LOCTEXT("ZeroDuration", "0.0s"));
         SummaryKeyframeCountText->SetText(LOCTEXT("ZeroKeyframes", "0"));
+        SummaryPromptText->SetText(FText::GetEmpty());
+        SummaryPromptText->SetIsReadOnly(true);
         SummaryInfoText->SetText(LOCTEXT("SelectInstruction", "Select a trajectory to view details."));
     }
 }
@@ -303,13 +398,405 @@ FReply SLevelSeqExporterWindow::OnCancelClicked()
 
 FReply SLevelSeqExporterWindow::OnExportClicked()
 {
-    // TODO: Implement Export Logic
-    // Gather all items with bExport == true and process them
+    // Gather selected items
+    TArray<ACDGTrajectory*> TrajectoriesToExport;
+    for (const auto& Item : TrajectoryItems)
+    {
+        if (Item->bExport && Item->Trajectory.IsValid())
+        {
+            TrajectoriesToExport.Add(Item->Trajectory.Get());
+        }
+    }
+
+    if (TrajectoriesToExport.Num() == 0)
+    {
+        return FReply::Handled();
+    }
+
+    // Get Settings
+    const int32 FPS = FPSInput->GetValue();
+    const bool bClearSequence = ClearSequenceCheckBox->IsChecked();
+    const FFrameRate FrameRate(FPS, 1);
+    const double TickResolution = 24000.0; // Standard tick resolution
+
+    // Create or Load Master Sequence
+    ULevelSequence* MasterSequence = nullptr;
     
-    // For now, hook is empty as requested
+    // Try to get existing sequence from subsystem first
+    if (UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr)
+    {
+        if (UCDGLevelSeqSubsystem* LevelSeqSubsystem = World->GetSubsystem<UCDGLevelSeqSubsystem>())
+        {
+            // Ensure sequence exists
+            LevelSeqSubsystem->InitLevelSequence();
+            MasterSequence = LevelSeqSubsystem->GetActiveLevelSequence();
+        }
+    }
+
+    if (!MasterSequence)
+    {
+        // Fallback or error handling if subsystem fails
+        return FReply::Handled();
+    }
+
+    UMovieScene* MasterMovieScene = MasterSequence->GetMovieScene();
+    MasterMovieScene->SetDisplayRate(FrameRate);
+    MasterMovieScene->SetTickResolutionDirectly(FFrameRate(TickResolution, 1));
+
+    // Clear if requested
+    if (bClearSequence)
+    {
+        // Remove all tracks
+        const TArray<UMovieSceneTrack*> Tracks = MasterMovieScene->GetTracks();
+        for (UMovieSceneTrack* Track : Tracks)
+        {
+            MasterMovieScene->RemoveTrack(*Track);
+        }
+        
+        // Remove all Spawnables
+        int32 SpawnableCount = MasterMovieScene->GetSpawnableCount();
+        for (int32 i = SpawnableCount - 1; i >= 0; --i)
+        {
+            MasterMovieScene->RemoveSpawnable(MasterMovieScene->GetSpawnable(i).GetGuid());
+        }
+
+        // Remove all Possessables
+        int32 PossessableCount = MasterMovieScene->GetPossessableCount();
+        for (int32 i = PossessableCount - 1; i >= 0; --i)
+        {
+            MasterMovieScene->RemovePossessable(MasterMovieScene->GetPossessable(i).GetGuid());
+        }
+    }
+
+    // Find or Add Cinematic Shot Track
+    UMovieSceneCinematicShotTrack* ShotTrack = Cast<UMovieSceneCinematicShotTrack>(MasterMovieScene->FindTrack(UMovieSceneCinematicShotTrack::StaticClass()));
+    if (!ShotTrack)
+    {
+        ShotTrack = MasterMovieScene->AddTrack<UMovieSceneCinematicShotTrack>();
+    }
+
+    // Calculate Start Frame (append to end)
+    FFrameNumber StartFrame = 0;
+    if (!bClearSequence)
+    {
+        TRange<FFrameNumber> PlaybackRange = MasterMovieScene->GetPlaybackRange();
+        if (!PlaybackRange.GetUpperBound().IsOpen())
+        {
+            StartFrame = PlaybackRange.GetUpperBound().GetValue();
+        }
+    }
+
+    IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
+    FString MasterPackagePath = FPackageName::GetLongPackagePath(MasterSequence->GetOutermost()->GetName());
+
+    // Process Trajectories
+    for (ACDGTrajectory* Trajectory : TrajectoriesToExport)
+    {
+        // Calculate Duration in Frames
+        float Duration = Trajectory->GetTrajectoryDuration();
+        int32 NumFrames = FMath::Max(1, FMath::RoundToInt(Duration * FPS));
+        int32 DurationInTicks = NumFrames * (TickResolution / FPS);
+        
+        // Create Shot Sequence Asset
+        FString ShotName = FString::Printf(TEXT("Shot_%s"), *Trajectory->TrajectoryName.ToString());
+        FString PackageName = MasterPackagePath / ShotName;
+        
+        ULevelSequence* ShotSequence = nullptr;
+        
+        // Check if exists
+        FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+        FAssetData AssetData = AssetRegistryModule.Get().GetAssetByObjectPath(FSoftObjectPath(PackageName + TEXT(".") + ShotName));
+        
+        if (AssetData.IsValid())
+        {
+             ShotSequence = Cast<ULevelSequence>(AssetData.GetAsset());
+        }
+        
+        if (!ShotSequence)
+        {
+            // Find the Level Sequence Factory
+            UFactory* Factory = nullptr;
+            for (TObjectIterator<UClass> It; It; ++It)
+            {
+                UClass* CurrentClass = *It;
+                if (CurrentClass->IsChildOf(UFactory::StaticClass()) && !(CurrentClass->HasAnyClassFlags(CLASS_Abstract)))
+                {
+                    UFactory* TestFactory = Cast<UFactory>(CurrentClass->GetDefaultObject());
+                    if (TestFactory && TestFactory->CanCreateNew() && TestFactory->SupportedClass == ULevelSequence::StaticClass())
+                    {
+                        Factory = TestFactory;
+                        break;
+                    }
+                }
+            }
+
+            if (Factory)
+            {
+                ShotSequence = Cast<ULevelSequence>(AssetTools.CreateAsset(ShotName, MasterPackagePath, ULevelSequence::StaticClass(), Factory));
+            }
+        }
+
+        if (!ShotSequence)
+        {
+            UE_LOG(LogTemp, Error, TEXT("Failed to create shot sequence asset: %s"), *ShotName);
+            continue;
+        }
+
+        UMovieScene* ShotMovieScene = ShotSequence->GetMovieScene();
+        if (!ShotMovieScene) {
+            UE_LOG(LogTemp, Error, TEXT("Failed to get movie scene for shot sequence: %s"), *ShotName);
+            continue;
+        }
+        ShotMovieScene->SetDisplayRate(FrameRate);
+        ShotMovieScene->SetTickResolutionDirectly(FFrameRate(TickResolution, 1));
+        
+        // Clear existing tracks in shot (always overwrite shot content for simplicity)
+        {
+             const TArray<UMovieSceneTrack*> Tracks = ShotMovieScene->GetTracks();
+             for (UMovieSceneTrack* Track : Tracks) ShotMovieScene->RemoveTrack(*Track);
+             int32 SpawnableCount = ShotMovieScene->GetSpawnableCount();
+             for (int32 i = SpawnableCount - 1; i >= 0; --i) ShotMovieScene->RemoveSpawnable(ShotMovieScene->GetSpawnable(i).GetGuid());
+        }
+
+        // Add Camera to Shot
+        UObject* CameraTemplate = NewObject<ACineCameraActor>(ShotMovieScene, ACineCameraActor::StaticClass());
+        FGuid CameraGuid = ShotMovieScene->AddSpawnable(FString::Printf(TEXT("Cam_%s"), *Trajectory->TrajectoryName.ToString()), *CameraTemplate);
+
+        // Camera Cut Track in Shot
+        UMovieSceneCameraCutTrack* CameraCutTrack = ShotMovieScene->AddTrack<UMovieSceneCameraCutTrack>();
+        if (CameraCutTrack)
+        {
+            FMovieSceneObjectBindingID CameraBindingID(UE::MovieScene::FFixedObjectBindingID(CameraGuid, MovieSceneSequenceID::Root));
+            UMovieSceneCameraCutSection* CutSection = CameraCutTrack->AddNewCameraCut(CameraBindingID, 0);
+            if (CutSection)
+            {
+                CutSection->SetRange(TRange<FFrameNumber>(0, DurationInTicks));
+            }
+        }
+        
+            // Add Transform Track
+            UMovieScene3DTransformTrack* TransformTrack = ShotMovieScene->AddTrack<UMovieScene3DTransformTrack>(CameraGuid);
+            if (TransformTrack)
+            {
+                UMovieSceneSection* NewSection = TransformTrack->CreateNewSection();
+                UMovieScene3DTransformSection* TransformSection = Cast<UMovieScene3DTransformSection>(NewSection);
+                
+                if (TransformSection)
+                {
+                    TransformTrack->AddSection(*TransformSection);
+                    TransformSection->SetRange(TRange<FFrameNumber>(0, DurationInTicks));
+
+                    // Get Channels
+                    FMovieSceneChannelProxy& ChannelProxy = TransformSection->GetChannelProxy();
+                    TArrayView<FMovieSceneDoubleChannel*> DoubleChannels = ChannelProxy.GetChannels<FMovieSceneDoubleChannel>();
+                    
+                    if (DoubleChannels.Num() >= 6)
+                    {
+                        TArray<ACDGKeyframe*> TrajectoryKeyframes = Trajectory->GetSortedKeyframes();
+                        double CurrentTimeSeconds = 0.0;
+
+                        auto ConvertInterpMode = [](ECDGInterpolationMode Mode, ERichCurveInterpMode& OutInterpMode, ERichCurveTangentMode& OutTangentMode)
+                        {
+                            switch (Mode)
+                            {
+                            case ECDGInterpolationMode::Linear:
+                                OutInterpMode = RCIM_Linear;
+                                OutTangentMode = RCTM_Auto;
+                                break;
+                            case ECDGInterpolationMode::Constant:
+                                OutInterpMode = RCIM_Constant;
+                                OutTangentMode = RCTM_Auto;
+                                break;
+                            case ECDGInterpolationMode::Cubic:
+                            case ECDGInterpolationMode::CubicClamped:
+                                OutInterpMode = RCIM_Cubic;
+                                OutTangentMode = RCTM_Auto;
+                                break;
+                            case ECDGInterpolationMode::CustomTangent:
+                                OutInterpMode = RCIM_Cubic;
+                                OutTangentMode = RCTM_User;
+                                break;
+                            default:
+                                OutInterpMode = RCIM_Cubic;
+                                OutTangentMode = RCTM_Auto;
+                                break;
+                            }
+                        };
+
+                        auto AddKeyToChannel = [&](FMovieSceneDoubleChannel* Channel, FFrameNumber Time, double Value, ECDGInterpolationMode Mode)
+                        {
+                            if (!Channel) return; // Null check for channel
+
+                            ERichCurveInterpMode InterpMode;
+                            ERichCurveTangentMode TangentMode;
+                            ConvertInterpMode(Mode, InterpMode, TangentMode);
+
+                            if (InterpMode == RCIM_Constant)
+                            {
+                                Channel->AddConstantKey(Time, Value);
+                            }
+                            else if (InterpMode == RCIM_Linear)
+                            {
+                                Channel->AddLinearKey(Time, Value);
+                            }
+                            else
+                            {
+                                Channel->AddCubicKey(Time, Value, TangentMode);
+                            }
+                        };
+
+                        for (int32 k = 0; k < TrajectoryKeyframes.Num(); ++k)
+                        {
+                            ACDGKeyframe* Keyframe = TrajectoryKeyframes[k];
+                            if (!Keyframe) continue;
+
+                            if (k > 0)
+                            {
+                                CurrentTimeSeconds += Keyframe->TimeToCurrentFrame;
+                            }
+
+                            FFrameNumber KeyTime = FFrameNumber(static_cast<int32>(CurrentTimeSeconds * TickResolution));
+                            
+                            FTransform KeyTransform = Keyframe->GetKeyframeTransform();
+                            FVector Loc = KeyTransform.GetLocation();
+                            FRotator Rot = KeyTransform.GetRotation().Rotator();
+
+                            bool bHasStay = Keyframe->TimeAtCurrentFrame > KINDA_SMALL_NUMBER;
+
+                            // Add First Key (Arrival)
+                            // If staying, the interpolation for this segment (during stay) should be Constant
+                            ECDGInterpolationMode PosMode = bHasStay ? ECDGInterpolationMode::Constant : Keyframe->InterpolationSettings.PositionInterpMode;
+                            ECDGInterpolationMode RotMode = bHasStay ? ECDGInterpolationMode::Constant : Keyframe->InterpolationSettings.RotationInterpMode;
+
+                            AddKeyToChannel(DoubleChannels[0], KeyTime, Loc.X, PosMode);
+                            AddKeyToChannel(DoubleChannels[1], KeyTime, Loc.Y, PosMode);
+                            AddKeyToChannel(DoubleChannels[2], KeyTime, Loc.Z, PosMode);
+
+                            AddKeyToChannel(DoubleChannels[3], KeyTime, Rot.Roll, RotMode);
+                            AddKeyToChannel(DoubleChannels[4], KeyTime, Rot.Pitch, RotMode);
+                            AddKeyToChannel(DoubleChannels[5], KeyTime, Rot.Yaw, RotMode);
+
+                            // Add Second Key (Departure) if staying
+                            if (bHasStay)
+                            {
+                                CurrentTimeSeconds += Keyframe->TimeAtCurrentFrame;
+                                FFrameNumber EndKeyTime = FFrameNumber(static_cast<int32>(CurrentTimeSeconds * TickResolution));
+
+                                // Use the actual interpolation settings for the departure key
+                                PosMode = Keyframe->InterpolationSettings.PositionInterpMode;
+                                RotMode = Keyframe->InterpolationSettings.RotationInterpMode;
+
+                                AddKeyToChannel(DoubleChannels[0], EndKeyTime, Loc.X, PosMode);
+                                AddKeyToChannel(DoubleChannels[1], EndKeyTime, Loc.Y, PosMode);
+                                AddKeyToChannel(DoubleChannels[2], EndKeyTime, Loc.Z, PosMode);
+
+                                AddKeyToChannel(DoubleChannels[3], EndKeyTime, Rot.Roll, RotMode);
+                                AddKeyToChannel(DoubleChannels[4], EndKeyTime, Rot.Pitch, RotMode);
+                                AddKeyToChannel(DoubleChannels[5], EndKeyTime, Rot.Yaw, RotMode);
+                            }
+                        }
+                    }
+                }
+            }
+
+        // Handle Camera Component Properties (Focal Length, etc.)
+        FMovieSceneSpawnable* CameraSpawnable = ShotMovieScene->FindSpawnable(CameraGuid);
+        UObject* Template = CameraSpawnable ? CameraSpawnable->GetObjectTemplate() : nullptr;
+        
+        ACineCameraActor* ActorTemplate = Cast<ACineCameraActor>(Template);
+        UCineCameraComponent* ComponentTemplate = ActorTemplate ? ActorTemplate->GetCineCameraComponent() : nullptr;
+
+        if (ComponentTemplate)
+        {
+            // Create binding for component
+            FGuid ComponentGuid = ShotMovieScene->AddPossessable(ComponentTemplate->GetName(), ComponentTemplate->GetClass());
+            
+            // Set Parent
+            FMovieScenePossessable* ChildPossessable = ShotMovieScene->FindPossessable(ComponentGuid);
+            if (ChildPossessable)
+            {
+                ChildPossessable->SetParent(CameraGuid, ShotMovieScene);
+            }
+
+            // Add Focal Length Track
+            UMovieSceneFloatTrack* FocalLengthTrack = ShotMovieScene->AddTrack<UMovieSceneFloatTrack>(ComponentGuid);
+            if (FocalLengthTrack)
+            {
+                FocalLengthTrack->SetPropertyNameAndPath(GET_MEMBER_NAME_CHECKED(UCineCameraComponent, CurrentFocalLength), "CurrentFocalLength");
+                UMovieSceneFloatSection* FocalSection = Cast<UMovieSceneFloatSection>(FocalLengthTrack->CreateNewSection());
+                FocalLengthTrack->AddSection(*FocalSection);
+                FocalSection->SetRange(TRange<FFrameNumber>(0, DurationInTicks));
+                
+                FMovieSceneFloatChannel& FocalChannel = FocalSection->GetChannel();
+                
+                // Interpolate Focal Length from Keyframes
+                TArray<ACDGKeyframe*> TrajectoryKeyframes = Trajectory->GetSortedKeyframes();
+                double CurrentTimeSeconds = 0.0;
+                
+                for (int32 k = 0; k < TrajectoryKeyframes.Num(); ++k)
+                {
+                    ACDGKeyframe* Keyframe = TrajectoryKeyframes[k];
+                    if (!Keyframe) continue;
+                    
+                    // Calculate time for this keyframe
+                    if (k > 0)
+                    {
+                        CurrentTimeSeconds += Keyframe->TimeToCurrentFrame;
+                    }
+                    
+                    // Add Key for Focal Length
+                    FFrameNumber KeyTime = FFrameNumber(static_cast<int32>(CurrentTimeSeconds * TickResolution));
+                    
+                    bool bHasStay = Keyframe->TimeAtCurrentFrame > KINDA_SMALL_NUMBER;
+                    
+                    if (bHasStay)
+                    {
+                        FocalChannel.AddConstantKey(KeyTime, Keyframe->LensSettings.FocalLength);
+                        
+                        CurrentTimeSeconds += Keyframe->TimeAtCurrentFrame;
+                        FFrameNumber EndKeyTime = FFrameNumber(static_cast<int32>(CurrentTimeSeconds * TickResolution));
+                        FocalChannel.AddLinearKey(EndKeyTime, Keyframe->LensSettings.FocalLength);
+                    }
+                    else
+                    {
+                        FocalChannel.AddLinearKey(KeyTime, Keyframe->LensSettings.FocalLength);
+                    }
+                }
+            }
+        }
+             
+        ShotMovieScene->SetPlaybackRange(TRange<FFrameNumber>(0, DurationInTicks));
+        ShotSequence->MarkPackageDirty();
+
+        // Add Shot to Master Sequence
+        if (ShotTrack)
+        {
+            // Use AddSequence to correctly initialize the section and parameters
+            UMovieSceneSubSection* ShotSection = ShotTrack->AddSequence(ShotSequence, StartFrame, DurationInTicks);
+            if (ShotSection)
+            {
+                // AddSequence sets the range, but we confirm it here or adjust if needed.
+                // It uses the duration passed to it.
+                // It also sets the row index automatically.
+                
+                // We don't need to manually set Parameters.StartFrameOffset or TimeScale as AddSequence defaults them correctly (TimeScale 1.0)
+                // But we can ensure if needed.
+                ShotSection->Parameters.TimeScale = 1.0f;
+            }
+        }
+
+        // Advance StartFrame
+        StartFrame += FFrameNumber(DurationInTicks);
+    }
     
-    // Optionally close window after export
-    // OnCancelClicked(); 
+    // Set Master Sequence Playback Range to cover all shots
+    MasterMovieScene->SetPlaybackRange(TRange<FFrameNumber>(0, StartFrame));
+    
+    // Mark Master Dirty
+    MasterSequence->MarkPackageDirty();
+
+    // Close window
+    OnCancelClicked();
     
     return FReply::Handled();
 }
@@ -352,4 +839,3 @@ void CDGLevelSeqExporter::OpenWindow()
 }
 
 #undef LOCTEXT_NAMESPACE
-

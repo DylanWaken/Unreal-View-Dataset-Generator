@@ -290,15 +290,6 @@ void ACDGKeyframe::PostLoad()
 	
 	// Initialize previous trajectory name
 	PreviousTrajectoryName = TrajectoryName;
-	
-	// Register with subsystem after loading
-	if (UWorld* World = GetWorld())
-	{
-		if (UCDGTrajectorySubsystem* Subsystem = World->GetSubsystem<UCDGTrajectorySubsystem>())
-		{
-			Subsystem->RegisterKeyframe(this);
-		}
-	}
 }
 
 void ACDGKeyframe::PostActorCreated()

@@ -13,6 +13,7 @@
 #include "ScopedTransaction.h"
 #include "Widgets/Input/SNumericEntryBox.h"
 #include "Widgets/Input/SEditableTextBox.h"
+#include "Widgets/Input/SMultiLineEditableTextBox.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SComboBox.h"
 #include "Widgets/Text/STextBlock.h"
@@ -359,6 +360,101 @@ void FCDGKeyframeContextMenu::FillTrajectorySubmenu(FMenuBuilder& MenuBuilder, c
 				]
 			],
 			FText::GetEmpty()
+		);
+
+		// Text Prompt Editor
+		MenuBuilder.AddWidget(
+			SNew(SBox)
+			.Padding(FMargin(4.0f, 2.0f))
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Top)
+				.Padding(0, 4, 8, 0)
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("TextPromptLabel", "Text Prompt:"))
+					.MinDesiredWidth(100.0f)
+				]
+				+ SHorizontalBox::Slot()
+				.FillWidth(1.0f)
+				[
+					SNew(SMultiLineEditableTextBox)
+					.AutoWrapText(true)
+					.Text_Lambda([SelectedKeyframes]()
+					{
+						if (SelectedKeyframes.Num() == 0)
+							return FText::GetEmpty();
+						
+						// Get prompt from first keyframe's trajectory
+						FString FirstPrompt;
+						bool bHasFirst = false;
+						
+						if (UWorld* World = SelectedKeyframes[0]->GetWorld())
+						{
+							if (UCDGTrajectorySubsystem* Subsystem = World->GetSubsystem<UCDGTrajectorySubsystem>())
+							{
+								if (ACDGTrajectory* Traj = Subsystem->GetTrajectory(SelectedKeyframes[0]->TrajectoryName))
+								{
+									FirstPrompt = Traj->TextPrompt;
+									bHasFirst = true;
+								}
+							}
+						}
+						
+						if (!bHasFirst)
+							return FText::GetEmpty();
+
+						// Check consistency
+						for (ACDGKeyframe* Keyframe : SelectedKeyframes)
+						{
+							if (UWorld* World = Keyframe->GetWorld())
+							{
+								if (UCDGTrajectorySubsystem* Subsystem = World->GetSubsystem<UCDGTrajectorySubsystem>())
+								{
+									if (ACDGTrajectory* Traj = Subsystem->GetTrajectory(Keyframe->TrajectoryName))
+									{
+										if (Traj->TextPrompt != FirstPrompt)
+										{
+											return LOCTEXT("MultipleValues", "(Multiple)");
+										}
+									}
+								}
+							}
+						}
+						
+						return FText::FromString(FirstPrompt);
+					})
+					.HintText(LOCTEXT("TextPromptHint", "Enter text prompt for this trajectory"))
+					.OnTextCommitted_Lambda([SelectedKeyframes](const FText& NewText, ETextCommit::Type CommitType)
+					{
+						const FScopedTransaction Transaction(LOCTEXT("SetTextPrompt", "Set Text Prompt"));
+						TSet<ACDGTrajectory*> ProcessedTrajectories;
+						
+						for (ACDGKeyframe* Keyframe : SelectedKeyframes)
+						{
+							if (UWorld* World = Keyframe->GetWorld())
+							{
+								if (UCDGTrajectorySubsystem* Subsystem = World->GetSubsystem<UCDGTrajectorySubsystem>())
+								{
+									if (ACDGTrajectory* Traj = Subsystem->GetTrajectory(Keyframe->TrajectoryName))
+									{
+										if (!ProcessedTrajectories.Contains(Traj))
+										{
+											Traj->Modify();
+											Traj->TextPrompt = NewText.ToString();
+											ProcessedTrajectories.Add(Traj);
+										}
+									}
+								}
+							}
+						}
+					})
+				]
+			],
+			FText::GetEmpty(),
+			true // NoIndent
 		);
 
 		// Order in Trajectory Editor

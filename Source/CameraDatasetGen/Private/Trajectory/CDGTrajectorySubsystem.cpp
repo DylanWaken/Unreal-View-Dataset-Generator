@@ -56,9 +56,7 @@ void UCDGTrajectorySubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	Super::Initialize(Collection);
 
 	bIsInitialized = true;
-
-	// Scan for existing trajectories and keyframes in the world
-	RefreshAll();
+	bHasPerformedInitialRefresh = false;
 }
 
 void UCDGTrajectorySubsystem::Deinitialize()
@@ -78,6 +76,27 @@ void UCDGTrajectorySubsystem::OnWorldBeginPlay(UWorld& InWorld)
 
 	// Refresh when play begins
 	RefreshAll();
+	bHasPerformedInitialRefresh = true;
+}
+
+void UCDGTrajectorySubsystem::Tick(float DeltaTime)
+{
+	Super::Tick(DeltaTime);
+
+	if (!bHasPerformedInitialRefresh)
+	{
+		UE_LOG(LogCameraDatasetGen, Log, TEXT("CDGTrajectorySubsystem: Performing initial refresh in Tick"));
+		RefreshAll();
+		bHasPerformedInitialRefresh = true;
+	}
+
+	// Clear out empty trajectories per tick
+	CleanupEmptyTrajectories();
+}
+
+TStatId UCDGTrajectorySubsystem::GetStatId() const
+{
+	RETURN_QUICK_DECLARE_CYCLE_STAT(UCDGTrajectorySubsystem, STATGROUP_Tickables);
 }
 
 // ==================== TRAJECTORY MANAGEMENT ====================

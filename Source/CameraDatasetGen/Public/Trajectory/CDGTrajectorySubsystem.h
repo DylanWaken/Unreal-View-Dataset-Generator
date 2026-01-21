@@ -27,7 +27,7 @@ class ACDGTrajectory;
  * - Prepares data for export to UMovieScene3DTransformSection
  */
 UCLASS()
-class CAMERADATASETGEN_API UCDGTrajectorySubsystem : public UWorldSubsystem
+class CAMERADATASETGEN_API UCDGTrajectorySubsystem : public UTickableWorldSubsystem
 {
 	GENERATED_BODY()
 
@@ -37,6 +37,12 @@ public:
 	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
 	virtual void Deinitialize() override;
 	virtual void OnWorldBeginPlay(UWorld& InWorld) override;
+	
+	virtual void Tick(float DeltaTime) override;
+	virtual TStatId GetStatId() const override;
+
+	/** Allow ticking in the editor */
+	virtual bool IsTickableInEditor() const override { return true; }
 
 	// ==================== CONSTANTS ====================
 
@@ -189,6 +195,9 @@ protected:
 
 	/** Whether the subsystem has been initialized */
 	bool bIsInitialized = false;
+
+	/** Whether the initial refresh has been performed */
+	bool bHasPerformedInitialRefresh = false;
 
 	/** Saved visualizer states for trajectories (bShowTrajectory) */
 	TMap<FName, bool> SavedTrajectoryVisualizerStates;

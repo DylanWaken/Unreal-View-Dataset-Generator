@@ -49,6 +49,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trajectory")
 	FName TrajectoryName;
 
+	/** Text prompt associated with this trajectory */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trajectory", meta = (MultiLine = "true"))
+	FString TextPrompt;
+
 	/** Color for trajectory visualization */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Trajectory|Visualization")
 	FLinearColor TrajectoryColor = FLinearColor(1.0f, 0.5f, 0.0f, 1.0f);

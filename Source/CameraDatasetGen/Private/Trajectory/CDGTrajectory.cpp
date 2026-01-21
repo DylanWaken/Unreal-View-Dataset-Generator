@@ -156,15 +156,6 @@ void ACDGTrajectory::PostLoad()
 		SetActorLabel(TrajectoryName.ToString());
 	}
 	
-	// Register with subsystem after loading
-	if (UWorld* World = GetWorld())
-	{
-		if (UCDGTrajectorySubsystem* Subsystem = World->GetSubsystem<UCDGTrajectorySubsystem>())
-		{
-			Subsystem->RegisterTrajectory(this);
-		}
-	}
-	
 	// Ensure visualizer is set up
 	if (VisualizerComponent)
 	{
