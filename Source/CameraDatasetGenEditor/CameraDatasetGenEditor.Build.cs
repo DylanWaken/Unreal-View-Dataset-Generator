@@ -36,26 +36,27 @@ public class CameraDatasetGenEditor : ModuleRules
 			);
 			
 		
-	PrivateDependencyModuleNames.AddRange(
-		new string[]
-		{
-			"CoreUObject",
-			"Engine",
-			"Slate",
-			"SlateCore",
-			"UnrealEd",
-			"LevelEditor",
-			"Projects",
-			"InputCore",
-			"ToolMenus",  // Required for UToolMenus toolbar extension
-			"PropertyEditor",  // Required for details panel access
-			"RenderCore",  // Required for GWhiteTexture
-			"LevelSequenceEditor",
-			"AssetTools",
-			"AssetRegistry",
-			"EditorStyle",
-			// ... add private dependencies that you statically link with here ...	
-		}
+		PrivateDependencyModuleNames.AddRange(
+			new string[]
+			{
+				"CoreUObject",
+				"Engine",
+				"Slate",
+				"SlateCore",
+				"UnrealEd",
+				"LevelEditor",
+				"Projects",
+				"InputCore",
+				"ToolMenus",  // Required for UToolMenus toolbar extension
+				"PropertyEditor",  // Required for details panel access
+				"RenderCore",  // Required for GWhiteTexture
+				"LevelSequenceEditor",
+				"AssetTools",
+				"AssetRegistry",
+				"EditorStyle",
+				"DesktopPlatform",  // Required for file save dialog
+				// ... add private dependencies that you statically link with here ...	
+			}
 		);
 		
 		
@@ -64,7 +65,7 @@ public class CameraDatasetGenEditor : ModuleRules
 			{
 				// ... add any modules that your module loads dynamically here ...
 			}
-			);
+		);
 	}
 }
 

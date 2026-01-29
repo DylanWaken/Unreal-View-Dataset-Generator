@@ -42,4 +42,10 @@ private:
 	 * Opens the export window
 	 */
 	static void OnExportToLevelSequence();
+
+	/**
+	 * Called when "Load Trajectories from JSON" is clicked
+	 * Opens a file dialog and loads trajectories from JSON file
+	 */
+	static void OnLoadTrajectoriesFromJSON();
 };

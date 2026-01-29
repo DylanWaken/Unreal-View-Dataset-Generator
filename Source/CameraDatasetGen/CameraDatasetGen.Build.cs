@@ -23,27 +23,30 @@ public class CameraDatasetGen : ModuleRules
 			
 		
 		PublicDependencyModuleNames.AddRange(
-		new string[]
-		{
-			"Core",
-			"CoreUObject",
-			"Engine",
-			"CinematicCamera",
-			// ... add other public dependencies that you statically link with here ...
-		}
+			new string[]
+			{
+				"Core",
+				"CoreUObject",
+				"Engine",
+				"CinematicCamera",
+				// ... add other public dependencies that you statically link with here ...
+			}
 		);
 			
 		
-	PrivateDependencyModuleNames.AddRange(
-		new string[]
-		{
-			"Slate",
-			"SlateCore",
-			"RenderCore",
-			"RHI",
-			"Renderer",
-			// ... add private dependencies that you statically link with here ...	
-		}
+		PrivateDependencyModuleNames.AddRange(
+			new string[]
+			{
+				"Slate",
+				"SlateCore",
+				"RenderCore",
+				"RHI",
+				"Renderer",
+				"Json",
+				"JsonUtilities",
+				"UnrealEd",
+				// ... add private dependencies that you statically link with here ...	
+			}
 		);
 		
 		

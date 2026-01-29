@@ -388,7 +388,7 @@ FString ACDGKeyframe::GetKeyframeID() const
 
 bool ACDGKeyframe::ShouldHideActor() const
 {
-	const UWorld* World = GetWorld();
+	const UWorld* World = GetWorld(); 
 	if (!World)
 	{
 		return true;

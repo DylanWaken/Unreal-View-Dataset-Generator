@@ -3,13 +3,21 @@
 #include "UI/TopButtonDropdown/TopButtonDropdown.h"
 #include "UI/LevelSeqExporterWindow/CDGLevelSeqExporter.h"
 #include "Trajectory/CDGKeyframe.h"
+#include "Trajectory/CDGTrajectory.h"
+#include "Trajectory/CDGTrajectorySubsystem.h"
+#include "IO/TrajectorySL.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Framework/Notifications/NotificationManager.h"
 #include "Styling/AppStyle.h"
 #include "Editor.h"
 #include "LevelEditorViewport.h"
 #include "LogCameraDatasetGenEditor.h"
 #include "LevelSequenceInterface/CDGLevelSeqSubsystem.h"
 #include "Engine/World.h"
+#include "DesktopPlatformModule.h"
+#include "IDesktopPlatform.h"
+#include "Misc/Paths.h"
+#include "Widgets/Notifications/SNotificationList.h"
 
 #define LOCTEXT_NAMESPACE "TopButtonDropdown"
 
@@ -48,6 +56,16 @@ TSharedRef<SWidget> FTopButtonDropdown::MakeDropdownMenu()
 		LOCTEXT("ExportToLevelSequence_Tooltip", "Open window to export trajectories to the Level Sequence"),
 		FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Share"),
 		FUIAction(FExecuteAction::CreateStatic(&FTopButtonDropdown::OnExportToLevelSequence))
+	);
+
+	MenuBuilder.AddMenuSeparator();
+
+	// Add "Load Trajectories from JSON" menu entry
+	MenuBuilder.AddMenuEntry(
+		LOCTEXT("LoadTrajectoriesFromJSON_Label", "Load Trajectories from JSON"),
+		LOCTEXT("LoadTrajectoriesFromJSON_Tooltip", "Load and spawn trajectories from a JSON file"),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Import"),
+		FUIAction(FExecuteAction::CreateStatic(&FTopButtonDropdown::OnLoadTrajectoriesFromJSON))
 	);
 
 	return MenuBuilder.MakeWidget();
@@ -144,6 +162,74 @@ void FTopButtonDropdown::OnDeleteLevelSequence()
 void FTopButtonDropdown::OnExportToLevelSequence()
 {
 	CDGLevelSeqExporter::OpenWindow();
+}
+
+void FTopButtonDropdown::OnLoadTrajectoriesFromJSON()
+{
+	// Get Desktop Platform for file dialog
+	IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get();
+	if (!DesktopPlatform)
+	{
+		UE_LOG(LogCameraDatasetGenEditor, Error, TEXT("Failed to get Desktop Platform module"));
+		return;
+	}
+
+	// Get parent window for the file dialog
+	void* ParentWindowHandle = nullptr;
+	if (FSlateApplication::IsInitialized())
+	{
+		TSharedPtr<SWindow> MainWindow = FSlateApplication::Get().GetActiveTopLevelWindow();
+		if (MainWindow.IsValid() && MainWindow->GetNativeWindow().IsValid())
+		{
+			ParentWindowHandle = MainWindow->GetNativeWindow()->GetOSWindowHandle();
+		}
+	}
+
+	// Default open location
+	FString DefaultPath = FPaths::ProjectSavedDir() / TEXT("Trajectories");
+
+	// Show file open dialog
+	TArray<FString> OutFiles;
+	bool bFileSelected = DesktopPlatform->OpenFileDialog(
+		ParentWindowHandle,
+		TEXT("Load Trajectories from JSON"),
+		DefaultPath,
+		TEXT(""),
+		TEXT("JSON Files (*.json)|*.json|All Files (*.*)|*.*"),
+		EFileDialogFlags::None,
+		OutFiles
+	);
+
+	if (!bFileSelected || OutFiles.Num() == 0)
+	{
+		// User cancelled
+		return;
+	}
+
+	FString FilePath = OutFiles[0];
+
+	// Load trajectories from JSON
+	bool bSuccess = TrajectorySL::LoadAllTrajectories(FilePath);
+
+	// Show notification
+	FNotificationInfo Info(bSuccess 
+		? FText::Format(LOCTEXT("LoadJSONSuccess", "Trajectories loaded from:\n{0}"), FText::FromString(FilePath))
+		: LOCTEXT("LoadJSONFailed", "Failed to load trajectories from JSON"));
+	
+	Info.ExpireDuration = 5.0f;
+	Info.bUseLargeFont = false;
+	Info.bUseSuccessFailIcons = true;
+	
+	FSlateNotificationManager::Get().AddNotification(Info);
+
+	if (bSuccess)
+	{
+		UE_LOG(LogCameraDatasetGenEditor, Log, TEXT("Trajectories loaded from JSON: %s"), *FilePath);
+	}
+	else
+	{
+		UE_LOG(LogCameraDatasetGenEditor, Error, TEXT("Failed to load trajectories from JSON: %s"), *FilePath);
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

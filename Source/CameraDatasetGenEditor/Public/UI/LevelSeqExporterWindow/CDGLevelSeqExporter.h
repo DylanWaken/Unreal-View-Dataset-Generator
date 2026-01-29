@@ -45,6 +45,7 @@ private:
     /** Button handlers */
     FReply OnCancelClicked();
     FReply OnExportClicked();
+    FReply OnExportJSONClicked();
     
     /** Checkbox handlers */
     void OnToggleExport(ECheckBoxState NewState, TSharedPtr<FTrajectoryExportItem> Item);

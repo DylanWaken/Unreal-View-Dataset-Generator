@@ -3,6 +3,8 @@
 #include "UI/LevelSeqExporterWindow/CDGLevelSeqExporter.h"
 #include "Trajectory/CDGKeyframe.h"
 #include "LevelSequenceInterface/CDGLevelSeqSubsystem.h"
+#include "IO/TrajectorySL.h"
+#include "LogCameraDatasetGenEditor.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SSplitter.h"
 #include "Widgets/Layout/SUniformGridPanel.h"
@@ -17,6 +19,7 @@
 #include "EditorStyleSet.h"
 #include "EngineUtils.h"
 #include "Framework/Application/SlateApplication.h"
+#include "Framework/Notifications/NotificationManager.h"
 #include "Interfaces/IMainFrameModule.h"
 #include "AssetToolsModule.h"
 #include "IAssetTools.h"
@@ -38,6 +41,10 @@
 #include "CineCameraComponent.h"
 #include "Factories/Factory.h"
 #include "UObject/SavePackage.h"
+#include "DesktopPlatformModule.h"
+#include "IDesktopPlatform.h"
+#include "Misc/Paths.h"
+#include "Widgets/Notifications/SNotificationList.h"
 
 #define LOCTEXT_NAMESPACE "CDGLevelSeqExporter"
 
@@ -271,7 +278,7 @@ void SLevelSeqExporterWindow::Construct(const FArguments& InArgs, const TArray<A
                 ]
             ]
             
-            // Bottom Buttons: Cancel, Export
+            // Bottom Buttons: Cancel, Export JSON, Export
             + SVerticalBox::Slot()
             .AutoHeight()
             .Padding(0, 10, 0, 0)
@@ -288,6 +295,16 @@ void SLevelSeqExporterWindow::Construct(const FArguments& InArgs, const TArray<A
                     .Text(LOCTEXT("CancelButton", "Cancel"))
                     .OnClicked(this, &SLevelSeqExporterWindow::OnCancelClicked)
                     .ToolTipText(LOCTEXT("CancelButtonTooltip", "Close the window without exporting"))
+                ]
+                
+                + SHorizontalBox::Slot()
+                .AutoWidth()
+                .Padding(5, 0)
+                [
+                    SNew(SButton)
+                    .Text(LOCTEXT("ExportJSONButton", "Export JSON"))
+                    .OnClicked(this, &SLevelSeqExporterWindow::OnExportJSONClicked)
+                    .ToolTipText(LOCTEXT("ExportJSONButtonTooltip", "Export all trajectories to JSON file"))
                 ]
                 
                 + SHorizontalBox::Slot()
@@ -547,30 +564,87 @@ FReply SLevelSeqExporterWindow::OnExportClicked()
             UE_LOG(LogTemp, Error, TEXT("Failed to get movie scene for shot sequence: %s"), *ShotName);
             continue;
         }
+
+        // Notify that we are about to modify the sequence and movie scene
+        ShotSequence->Modify();
+        ShotMovieScene->Modify();
+
         ShotMovieScene->SetDisplayRate(FrameRate);
         ShotMovieScene->SetTickResolutionDirectly(FFrameRate(TickResolution, 1));
         
         // Clear existing tracks in shot (always overwrite shot content for simplicity)
         {
-             const TArray<UMovieSceneTrack*> Tracks = ShotMovieScene->GetTracks();
-             for (UMovieSceneTrack* Track : Tracks) ShotMovieScene->RemoveTrack(*Track);
+             // Create a copy of the tracks array to safely iterate while removing
+             TArray<UMovieSceneTrack*> ExistingTracks = ShotMovieScene->GetTracks();
+             for (UMovieSceneTrack* Track : ExistingTracks)
+             {
+                 ShotMovieScene->RemoveTrack(*Track);
+             }
+             
+             // Remove all spawnables
              int32 SpawnableCount = ShotMovieScene->GetSpawnableCount();
-             for (int32 i = SpawnableCount - 1; i >= 0; --i) ShotMovieScene->RemoveSpawnable(ShotMovieScene->GetSpawnable(i).GetGuid());
+             for (int32 i = SpawnableCount - 1; i >= 0; --i)
+             {
+                 ShotMovieScene->RemoveSpawnable(ShotMovieScene->GetSpawnable(i).GetGuid());
+             }
+
+             // Remove all possessables (to ensure orphaned bindings are cleared)
+             int32 PossessableCount = ShotMovieScene->GetPossessableCount();
+             for (int32 i = PossessableCount - 1; i >= 0; --i)
+             {
+                 ShotMovieScene->RemovePossessable(ShotMovieScene->GetPossessable(i).GetGuid());
+             }
         }
 
         // Add Camera to Shot
-        UObject* CameraTemplate = NewObject<ACineCameraActor>(ShotMovieScene, ACineCameraActor::StaticClass());
-        FGuid CameraGuid = ShotMovieScene->AddSpawnable(FString::Printf(TEXT("Cam_%s"), *Trajectory->TrajectoryName.ToString()), *CameraTemplate);
+        UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+        if (!World)
+        {
+            UE_LOG(LogTemp, Error, TEXT("No valid world context found for spawning camera."));
+            continue;
+        }
+
+        FString CameraName = FString::Printf(TEXT("Cam_%s"), *Trajectory->TrajectoryName.ToString());
+        ACineCameraActor* CameraActor = nullptr;
+
+        // Cleanup existing camera with the same name
+        for (TActorIterator<ACineCameraActor> It(World); It; ++It)
+        {
+            if (It->GetActorLabel() == CameraName)
+            {
+                World->EditorDestroyActor(*It, true);
+                break;
+            }
+        }
+
+        // Spawn new persistent camera
+        FActorSpawnParameters SpawnParams;
+        CameraActor = World->SpawnActor<ACineCameraActor>(ACineCameraActor::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator, SpawnParams);
+        if (CameraActor)
+        {
+            CameraActor->SetActorLabel(CameraName);
+        }
+
+        if (!CameraActor)
+        {
+             UE_LOG(LogTemp, Error, TEXT("Failed to spawn camera actor: %s"), *CameraName);
+             continue;
+        }
+
+        // Add Possessable Binding for the Actor
+        FGuid CameraGuid = ShotMovieScene->AddPossessable(CameraActor->GetActorLabel(), CameraActor->GetClass());
+        ShotSequence->BindPossessableObject(CameraGuid, *CameraActor, World);
 
         // Camera Cut Track in Shot
         UMovieSceneCameraCutTrack* CameraCutTrack = ShotMovieScene->AddTrack<UMovieSceneCameraCutTrack>();
         if (CameraCutTrack)
         {
-            FMovieSceneObjectBindingID CameraBindingID(UE::MovieScene::FFixedObjectBindingID(CameraGuid, MovieSceneSequenceID::Root));
-            UMovieSceneCameraCutSection* CutSection = CameraCutTrack->AddNewCameraCut(CameraBindingID, 0);
+            UMovieSceneCameraCutSection* CutSection = Cast<UMovieSceneCameraCutSection>(CameraCutTrack->CreateNewSection());
             if (CutSection)
             {
                 CutSection->SetRange(TRange<FFrameNumber>(0, DurationInTicks));
+                CutSection->SetCameraGuid(CameraGuid);
+                CameraCutTrack->AddSection(*CutSection);
             }
         }
         
@@ -700,16 +774,12 @@ FReply SLevelSeqExporterWindow::OnExportClicked()
             }
 
         // Handle Camera Component Properties (Focal Length, etc.)
-        FMovieSceneSpawnable* CameraSpawnable = ShotMovieScene->FindSpawnable(CameraGuid);
-        UObject* Template = CameraSpawnable ? CameraSpawnable->GetObjectTemplate() : nullptr;
-        
-        ACineCameraActor* ActorTemplate = Cast<ACineCameraActor>(Template);
-        UCineCameraComponent* ComponentTemplate = ActorTemplate ? ActorTemplate->GetCineCameraComponent() : nullptr;
+        UCineCameraComponent* CameraComponent = CameraActor->GetCineCameraComponent();
 
-        if (ComponentTemplate)
+        if (CameraComponent)
         {
             // Create binding for component
-            FGuid ComponentGuid = ShotMovieScene->AddPossessable(ComponentTemplate->GetName(), ComponentTemplate->GetClass());
+            FGuid ComponentGuid = ShotMovieScene->AddPossessable(CameraComponent->GetName(), CameraComponent->GetClass());
             
             // Set Parent
             FMovieScenePossessable* ChildPossessable = ShotMovieScene->FindPossessable(ComponentGuid);
@@ -717,6 +787,9 @@ FReply SLevelSeqExporterWindow::OnExportClicked()
             {
                 ChildPossessable->SetParent(CameraGuid, ShotMovieScene);
             }
+
+            // Bind Component
+            ShotSequence->BindPossessableObject(ComponentGuid, *CameraComponent, CameraActor);
 
             // Add Focal Length Track
             UMovieSceneFloatTrack* FocalLengthTrack = ShotMovieScene->AddTrack<UMovieSceneFloatTrack>(ComponentGuid);
@@ -798,6 +871,83 @@ FReply SLevelSeqExporterWindow::OnExportClicked()
     // Close window
     OnCancelClicked();
     
+    return FReply::Handled();
+}
+
+FReply SLevelSeqExporterWindow::OnExportJSONClicked()
+{
+    // Get FPS setting from the UI
+    const int32 FPS = FPSInput->GetValue();
+
+    // Open file save dialog
+    IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get();
+    if (!DesktopPlatform)
+    {
+        UE_LOG(LogCameraDatasetGenEditor, Error, TEXT("Failed to get Desktop Platform module"));
+        return FReply::Handled();
+    }
+
+    // Get parent window for the file dialog
+    TSharedPtr<SWindow> ParentWindow = FSlateApplication::Get().FindWidgetWindow(AsShared());
+    void* ParentWindowHandle = (ParentWindow.IsValid() && ParentWindow->GetNativeWindow().IsValid()) 
+        ? ParentWindow->GetNativeWindow()->GetOSWindowHandle() 
+        : nullptr;
+
+    // Setup default filename based on level name
+    FString DefaultFileName = TEXT("Trajectories.json");
+    if (UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr)
+    {
+        FString LevelName = World->GetMapName();
+        LevelName.RemoveFromStart(World->StreamingLevelsPrefix); // Remove PIE prefix if present
+        DefaultFileName = FString::Printf(TEXT("%s_Trajectories.json"), *LevelName);
+    }
+
+    // Default save location
+    FString DefaultPath = FPaths::ProjectSavedDir() / TEXT("Trajectories");
+
+    // Show file save dialog
+    TArray<FString> OutFiles;
+    bool bFileSelected = DesktopPlatform->SaveFileDialog(
+        ParentWindowHandle,
+        TEXT("Save Trajectories as JSON"),
+        DefaultPath,
+        DefaultFileName,
+        TEXT("JSON Files (*.json)|*.json|All Files (*.*)|*.*"),
+        EFileDialogFlags::None,
+        OutFiles
+    );
+
+    if (!bFileSelected || OutFiles.Num() == 0)
+    {
+        // User cancelled
+        return FReply::Handled();
+    }
+
+    FString FilePath = OutFiles[0];
+
+    // Save trajectories to JSON
+    bool bSuccess = TrajectorySL::SaveAllTrajectories(FilePath, FPS, true);
+
+    // Show notification
+    FNotificationInfo Info(bSuccess 
+        ? FText::Format(LOCTEXT("ExportJSONSuccess", "Trajectories exported to:\n{0}"), FText::FromString(FilePath))
+        : LOCTEXT("ExportJSONFailed", "Failed to export trajectories to JSON"));
+    
+    Info.ExpireDuration = 5.0f;
+    Info.bUseLargeFont = false;
+    Info.bUseSuccessFailIcons = true;
+    
+    FSlateNotificationManager::Get().AddNotification(Info);
+
+    if (bSuccess)
+    {
+        UE_LOG(LogCameraDatasetGenEditor, Log, TEXT("Trajectories exported to JSON: %s (FPS: %d)"), *FilePath, FPS);
+    }
+    else
+    {
+        UE_LOG(LogCameraDatasetGenEditor, Error, TEXT("Failed to export trajectories to JSON: %s"), *FilePath);
+    }
+
     return FReply::Handled();
 }
 
