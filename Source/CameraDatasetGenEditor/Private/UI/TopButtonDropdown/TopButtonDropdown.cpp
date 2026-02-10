@@ -2,6 +2,7 @@
 
 #include "UI/TopButtonDropdown/TopButtonDropdown.h"
 #include "UI/LevelSeqExporterWindow/CDGLevelSeqExporter.h"
+#include "UI/MRQInterfaceWindow/CDGMRQInterfaceWindow.h"
 #include "Trajectory/CDGKeyframe.h"
 #include "Trajectory/CDGTrajectory.h"
 #include "Trajectory/CDGTrajectorySubsystem.h"
@@ -56,6 +57,14 @@ TSharedRef<SWidget> FTopButtonDropdown::MakeDropdownMenu()
 		LOCTEXT("ExportToLevelSequence_Tooltip", "Open window to export trajectories to the Level Sequence"),
 		FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Share"),
 		FUIAction(FExecuteAction::CreateStatic(&FTopButtonDropdown::OnExportToLevelSequence))
+	);
+
+	// Add "Open MRQ Interface" menu entry
+	MenuBuilder.AddMenuEntry(
+		LOCTEXT("OpenMRQInterface_Label", "Open MRQ Interface"),
+		LOCTEXT("OpenMRQInterface_Tooltip", "Open Movie Render Queue Interface to render trajectories"),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Cinematics"),
+		FUIAction(FExecuteAction::CreateStatic(&FTopButtonDropdown::OnOpenMRQInterface))
 	);
 
 	MenuBuilder.AddMenuSeparator();
@@ -230,6 +239,11 @@ void FTopButtonDropdown::OnLoadTrajectoriesFromJSON()
 	{
 		UE_LOG(LogCameraDatasetGenEditor, Error, TEXT("Failed to load trajectories from JSON: %s"), *FilePath);
 	}
+}
+
+void FTopButtonDropdown::OnOpenMRQInterface()
+{
+	CDGMRQInterfaceWindow::OpenWindow();
 }
 
 #undef LOCTEXT_NAMESPACE

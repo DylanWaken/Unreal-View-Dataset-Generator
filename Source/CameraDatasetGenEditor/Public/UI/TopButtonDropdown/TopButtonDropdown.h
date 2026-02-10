@@ -48,4 +48,10 @@ private:
 	 * Opens a file dialog and loads trajectories from JSON file
 	 */
 	static void OnLoadTrajectoriesFromJSON();
+
+	/**
+	 * Called when "Open MRQ Interface" is clicked
+	 * Opens the Movie Render Queue Interface window
+	 */
+	static void OnOpenMRQInterface();
 };

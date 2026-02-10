@@ -31,6 +31,10 @@ public class CameraDatasetGenEditor : ModuleRules
 				"MovieScene",
 				"MovieSceneTracks",
 				"CinematicCamera",
+				"MovieRenderPipelineCore",
+				"MovieRenderPipelineRenderPasses",
+				"MovieRenderPipelineSettings",
+				"MovieRenderPipelineEditor",
 				// ... add other public dependencies that you statically link with here ...
 			}
 			);
@@ -55,6 +59,8 @@ public class CameraDatasetGenEditor : ModuleRules
 				"AssetRegistry",
 				"EditorStyle",
 				"DesktopPlatform",  // Required for file save dialog
+				"HTTP",  // Required for FFmpeg download
+				"Json",  // Required for JSON parsing
 				// ... add private dependencies that you statically link with here ...	
 			}
 		);
