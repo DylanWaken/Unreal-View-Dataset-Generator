@@ -423,6 +423,93 @@ void UCDGEditorState::DrawViewportOverlay(UCanvas* Canvas, APlayerController* PC
 	);
 
 	Canvas->DrawItem(TextItem);
+
+	// Draw a translucent focus plane when manual focus is enabled.
+	if (IsValid(PreviewedKeyframe) &&
+		PreviewedKeyframe->LensSettings.bUseManualFocusDistance &&
+		PreviewedKeyframe->LensSettings.FocusDistance > KINDA_SMALL_NUMBER)
+	{
+		if (FLevelEditorViewportClient* ViewportClient = GetActiveViewportClient())
+		{
+			const float FocusDistanceCm = PreviewedKeyframe->LensSettings.FocusDistance;
+			const FVector CameraLocation = ViewportClient->GetViewLocation();
+			const FRotator CameraRotation = ViewportClient->GetViewRotation();
+			const FVector Forward = CameraRotation.Vector();
+			const FRotationMatrix CameraBasis(CameraRotation);
+			const FVector Right = CameraBasis.GetUnitAxis(EAxis::Y);
+			const FVector Up = CameraBasis.GetUnitAxis(EAxis::Z);
+
+			const float AspectRatio = (CanvasHeight > 1.0f) ? (CanvasWidth / CanvasHeight) : 1.77778f;
+			const float HalfFovRadians = FMath::DegreesToRadians(ViewportClient->ViewFOV * 0.5f);
+			const float HalfPlaneWidth = FMath::Tan(HalfFovRadians) * FocusDistanceCm;
+			const float HalfPlaneHeight = HalfPlaneWidth / AspectRatio;
+
+			const FVector PlaneCenter = CameraLocation + Forward * FocusDistanceCm;
+			const FVector PlaneTopLeft = PlaneCenter + (Up * HalfPlaneHeight) - (Right * HalfPlaneWidth);
+			const FVector PlaneTopRight = PlaneCenter + (Up * HalfPlaneHeight) + (Right * HalfPlaneWidth);
+			const FVector PlaneBottomRight = PlaneCenter - (Up * HalfPlaneHeight) + (Right * HalfPlaneWidth);
+			const FVector PlaneBottomLeft = PlaneCenter - (Up * HalfPlaneHeight) - (Right * HalfPlaneWidth);
+
+			const FVector ProjectedTopLeft = Canvas->Project(PlaneTopLeft);
+			const FVector ProjectedTopRight = Canvas->Project(PlaneTopRight);
+			const FVector ProjectedBottomRight = Canvas->Project(PlaneBottomRight);
+			const FVector ProjectedBottomLeft = Canvas->Project(PlaneBottomLeft);
+
+			if (ProjectedTopLeft.Z > 0.0f &&
+				ProjectedTopRight.Z > 0.0f &&
+				ProjectedBottomRight.Z > 0.0f &&
+				ProjectedBottomLeft.Z > 0.0f)
+			{
+				const FLinearColor FillColor(1.0f, 0.05f, 0.05f, 0.18f);
+				const FLinearColor OutlineColor(1.0f, 0.2f, 0.2f, 0.9f);
+				const FColor FillColorSRGB = FillColor.ToFColor(true);
+
+				FCanvasUVTri TriA;
+				TriA.V0_Pos = FVector2D(ProjectedTopLeft.X, ProjectedTopLeft.Y);
+				TriA.V1_Pos = FVector2D(ProjectedTopRight.X, ProjectedTopRight.Y);
+				TriA.V2_Pos = FVector2D(ProjectedBottomRight.X, ProjectedBottomRight.Y);
+				TriA.V0_UV = FVector2D(0.0f, 0.0f);
+				TriA.V1_UV = FVector2D(1.0f, 0.0f);
+				TriA.V2_UV = FVector2D(1.0f, 1.0f);
+				TriA.V0_Color = FillColorSRGB;
+				TriA.V1_Color = FillColorSRGB;
+				TriA.V2_Color = FillColorSRGB;
+
+				FCanvasUVTri TriB;
+				TriB.V0_Pos = FVector2D(ProjectedTopLeft.X, ProjectedTopLeft.Y);
+				TriB.V1_Pos = FVector2D(ProjectedBottomRight.X, ProjectedBottomRight.Y);
+				TriB.V2_Pos = FVector2D(ProjectedBottomLeft.X, ProjectedBottomLeft.Y);
+				TriB.V0_UV = FVector2D(0.0f, 0.0f);
+				TriB.V1_UV = FVector2D(1.0f, 1.0f);
+				TriB.V2_UV = FVector2D(0.0f, 1.0f);
+				TriB.V0_Color = FillColorSRGB;
+				TriB.V1_Color = FillColorSRGB;
+				TriB.V2_Color = FillColorSRGB;
+
+				TArray<FCanvasUVTri> PlaneTriangles;
+				PlaneTriangles.Reserve(2);
+				PlaneTriangles.Add(TriA);
+				PlaneTriangles.Add(TriB);
+
+				FCanvasTriangleItem PlaneItem(PlaneTriangles, GWhiteTexture);
+				PlaneItem.BlendMode = SE_BLEND_Translucent;
+				Canvas->DrawItem(PlaneItem);
+
+				FCanvasLineItem LineTop(FVector2D(ProjectedTopLeft.X, ProjectedTopLeft.Y), FVector2D(ProjectedTopRight.X, ProjectedTopRight.Y));
+				FCanvasLineItem LineRight(FVector2D(ProjectedTopRight.X, ProjectedTopRight.Y), FVector2D(ProjectedBottomRight.X, ProjectedBottomRight.Y));
+				FCanvasLineItem LineBottom(FVector2D(ProjectedBottomRight.X, ProjectedBottomRight.Y), FVector2D(ProjectedBottomLeft.X, ProjectedBottomLeft.Y));
+				FCanvasLineItem LineLeft(FVector2D(ProjectedBottomLeft.X, ProjectedBottomLeft.Y), FVector2D(ProjectedTopLeft.X, ProjectedTopLeft.Y));
+				LineTop.SetColor(OutlineColor);
+				LineRight.SetColor(OutlineColor);
+				LineBottom.SetColor(OutlineColor);
+				LineLeft.SetColor(OutlineColor);
+				Canvas->DrawItem(LineTop);
+				Canvas->DrawItem(LineRight);
+				Canvas->DrawItem(LineBottom);
+				Canvas->DrawItem(LineLeft);
+			}
+		}
+	}
 }
 
 void UCDGEditorState::SyncKeyframeFromViewport()

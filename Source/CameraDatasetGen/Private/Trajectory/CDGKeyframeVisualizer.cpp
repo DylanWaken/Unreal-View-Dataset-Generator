@@ -30,12 +30,14 @@ public:
 			FieldOfView = Keyframe->LensSettings.FieldOfView;
 			AspectRatio = Keyframe->FilmbackSettings.SensorAspectRatio;
 			FocusDistance = Keyframe->LensSettings.FocusDistance;
+			bUseManualFocusDistance = Keyframe->LensSettings.bUseManualFocusDistance;
 		}
 		else
 		{
 			FieldOfView = 90.0f;
 			AspectRatio = 1.777778f;
 			FocusDistance = 100000.0f;
+			bUseManualFocusDistance = true;
 		}
 
 		bWillEverBeLit = false;
@@ -165,7 +167,7 @@ private:
 		PDI->DrawLine(Location, FarCenter, CenterLineColor, DepthPriority, LineThickness * 1.5f);
 
 		// Draw focal point indicator
-		if (bShowFocalPoint && FocusDistance > 0.0f)
+		if (bShowFocalPoint && bUseManualFocusDistance && FocusDistance > 0.0f)
 		{
 			const float FocusDistanceUnits = FocusDistance / 100.0f; // Convert cm to units
 			if (FocusDistanceUnits < FarPlane)
@@ -203,6 +205,7 @@ private:
 	float FieldOfView;
 	float AspectRatio;
 	float FocusDistance;
+	bool bUseManualFocusDistance;
 };
 
 // ==================== UCDGKeyframeVisualizer Implementation ====================

@@ -29,6 +29,7 @@ public class CameraDatasetGen : ModuleRules
 				"CoreUObject",
 				"Engine",
 				"CinematicCamera",
+				"LevelSequence",
 				// ... add other public dependencies that you statically link with here ...
 			}
 		);
@@ -45,6 +46,8 @@ public class CameraDatasetGen : ModuleRules
 				"Json",
 				"JsonUtilities",
 				"UnrealEd",
+				"MovieScene",
+				"MovieSceneTracks",
 				// ... add private dependencies that you statically link with here ...	
 			}
 		);

@@ -54,4 +54,10 @@ private:
 	 * Opens the Movie Render Queue Interface window
 	 */
 	static void OnOpenMRQInterface();
+
+	/**
+	 * Called when "Generator Editor" is clicked
+	 * Opens the trajectory generator editor window
+	 */
+	static void OnOpenGeneratorEditor();
 };

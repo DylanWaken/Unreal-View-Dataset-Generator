@@ -13,6 +13,7 @@
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Input/SNumericEntryBox.h"
 #include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SCheckBox.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Styling/AppStyle.h"
 #include "Editor.h"
@@ -276,6 +277,50 @@ TSharedRef<SWidget> SCDGCameraPreviewContextMenu::BuildCameraSettingsContent()
 			]
 		]
 
+		// Use Manual Focus
+		+ SVerticalBox::Slot()
+		.AutoHeight()
+		.Padding(0, 2, 0, 2)
+		[
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			.Padding(0, 0, 8, 0)
+			[
+				SNew(SBox)
+				.MinDesiredWidth(140.0f)
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("UseManualFocusLabel", "Use Manual Focus:"))
+				]
+			]
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			[
+				SNew(SCheckBox)
+				.IsChecked_Lambda([this]() -> ECheckBoxState
+				{
+					if (!Keyframe.IsValid())
+					{
+						return ECheckBoxState::Undetermined;
+					}
+					return Keyframe->LensSettings.bUseManualFocusDistance ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+				})
+				.OnCheckStateChanged_Lambda([this](ECheckBoxState NewState)
+				{
+					if (Keyframe.IsValid())
+					{
+						const FScopedTransaction Transaction(LOCTEXT("SetUseManualFocusDistance", "Set Manual Focus Mode"));
+						Keyframe->Modify();
+						Keyframe->LensSettings.bUseManualFocusDistance = (NewState == ECheckBoxState::Checked);
+						GEditor->RedrawLevelEditingViewports();
+					}
+				})
+			]
+		]
+
 		// Focus Distance
 		+ SVerticalBox::Slot()
 		.AutoHeight()
@@ -298,6 +343,10 @@ TSharedRef<SWidget> SCDGCameraPreviewContextMenu::BuildCameraSettingsContent()
 			.FillWidth(1.0f)
 			[
 				SNew(SNumericEntryBox<float>)
+				.IsEnabled_Lambda([this]()
+				{
+					return Keyframe.IsValid() && Keyframe->LensSettings.bUseManualFocusDistance;
+				})
 				.AllowSpin(true)
 				.MinValue(FCDGCameraLensSettings::FocusDistanceMin)
 				.MaxValue(FCDGCameraLensSettings::FocusDistanceMax)
@@ -317,6 +366,7 @@ TSharedRef<SWidget> SCDGCameraPreviewContextMenu::BuildCameraSettingsContent()
 					if (Keyframe.IsValid())
 					{
 						Keyframe->LensSettings.FocusDistance = FMath::Max(FCDGCameraLensSettings::FocusDistanceMin, NewValue);
+						GEditor->RedrawLevelEditingViewports();
 					}
 				})
 				.OnValueCommitted_Lambda([this](float NewValue, ETextCommit::Type CommitType)
@@ -326,6 +376,7 @@ TSharedRef<SWidget> SCDGCameraPreviewContextMenu::BuildCameraSettingsContent()
 						const FScopedTransaction Transaction(LOCTEXT("SetFocusDistance", "Set Focus Distance"));
 						Keyframe->Modify();
 						Keyframe->LensSettings.FocusDistance = FMath::Max(FCDGCameraLensSettings::FocusDistanceMin, NewValue);
+						GEditor->RedrawLevelEditingViewports();
 					}
 				})
 			]

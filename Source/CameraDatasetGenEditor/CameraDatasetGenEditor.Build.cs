@@ -57,6 +57,7 @@ public class CameraDatasetGenEditor : ModuleRules
 				"LevelSequenceEditor",
 				"AssetTools",
 				"AssetRegistry",
+				"LiveLinkHub",
 				"EditorStyle",
 				"DesktopPlatform",  // Required for file save dialog
 				"HTTP",  // Required for FFmpeg download

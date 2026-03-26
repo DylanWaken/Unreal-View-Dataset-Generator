@@ -367,6 +367,7 @@ namespace TrajectorySL
 			LensObj->SetNumberField(TEXT("FieldOfView"), Keyframe->LensSettings.FieldOfView);
 			LensObj->SetNumberField(TEXT("Aperture"), Keyframe->LensSettings.Aperture);
 			LensObj->SetNumberField(TEXT("FocusDistance"), Keyframe->LensSettings.FocusDistance);
+			LensObj->SetBoolField(TEXT("bUseManualFocusDistance"), Keyframe->LensSettings.bUseManualFocusDistance);
 			LensObj->SetNumberField(TEXT("DiaphragmBladeCount"), Keyframe->LensSettings.DiaphragmBladeCount);
 			KeyframeObj->SetObjectField(TEXT("LensSettings"), LensObj);
 
@@ -545,9 +546,11 @@ namespace TrajectorySL
 				// Add other camera parameters (interpolated)
 				float Aperture = FMath::Lerp(KeyframeA->LensSettings.Aperture, KeyframeB->LensSettings.Aperture, Alpha);
 				float FocusDistance = FMath::Lerp(KeyframeA->LensSettings.FocusDistance, KeyframeB->LensSettings.FocusDistance, Alpha);
+				const bool bUseManualFocusDistance = KeyframeA->LensSettings.bUseManualFocusDistance || KeyframeB->LensSettings.bUseManualFocusDistance;
 				
 				FrameObj->SetNumberField(TEXT("Aperture"), Aperture);
 				FrameObj->SetNumberField(TEXT("FocusDistance"), FocusDistance);
+				FrameObj->SetBoolField(TEXT("bUseManualFocusDistance"), bUseManualFocusDistance);
 
 				// Add keyframe blend info
 				FrameObj->SetNumberField(TEXT("KeyframeIndexA"), KeyframeIndexA);
@@ -700,6 +703,7 @@ namespace TrajectorySL
 				(*LensObj)->TryGetNumberField(TEXT("FieldOfView"), NewKeyframe->LensSettings.FieldOfView);
 				(*LensObj)->TryGetNumberField(TEXT("Aperture"), NewKeyframe->LensSettings.Aperture);
 				(*LensObj)->TryGetNumberField(TEXT("FocusDistance"), NewKeyframe->LensSettings.FocusDistance);
+				(*LensObj)->TryGetBoolField(TEXT("bUseManualFocusDistance"), NewKeyframe->LensSettings.bUseManualFocusDistance);
 				
 				int32 BladeCount;
 				if ((*LensObj)->TryGetNumberField(TEXT("DiaphragmBladeCount"), BladeCount))

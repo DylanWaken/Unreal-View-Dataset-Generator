@@ -3,6 +3,7 @@
 #include "UI/TopButtonDropdown/TopButtonDropdown.h"
 #include "UI/LevelSeqExporterWindow/CDGLevelSeqExporter.h"
 #include "UI/MRQInterfaceWindow/CDGMRQInterfaceWindow.h"
+#include "UI/GeneratorEditor/CDGGeneratorEditorWindow.h"
 #include "Trajectory/CDGKeyframe.h"
 #include "Trajectory/CDGTrajectory.h"
 #include "Trajectory/CDGTrajectorySubsystem.h"
@@ -15,7 +16,7 @@
 #include "LogCameraDatasetGenEditor.h"
 #include "LevelSequenceInterface/CDGLevelSeqSubsystem.h"
 #include "Engine/World.h"
-#include "DesktopPlatformModule.h"
+#include "DesktopPlatformModule.h" 
 #include "IDesktopPlatform.h"
 #include "Misc/Paths.h"
 #include "Widgets/Notifications/SNotificationList.h"
@@ -51,20 +52,22 @@ TSharedRef<SWidget> FTopButtonDropdown::MakeDropdownMenu()
 		FUIAction(FExecuteAction::CreateStatic(&FTopButtonDropdown::OnDeleteLevelSequence))
 	);
 
-	// Add "Export to Level Sequence" menu entry
+	// Add "Export & Render" menu entry (merged export + MRQ render window)
 	MenuBuilder.AddMenuEntry(
-		LOCTEXT("ExportToLevelSequence_Label", "Export to Level Sequence"),
-		LOCTEXT("ExportToLevelSequence_Tooltip", "Open window to export trajectories to the Level Sequence"),
-		FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Share"),
+		LOCTEXT("ExportToLevelSequence_Label", "Export & Render"),
+		LOCTEXT("ExportToLevelSequence_Tooltip", "Export trajectories to Level Sequence and optionally render via Movie Render Queue"),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Cinematics"),
 		FUIAction(FExecuteAction::CreateStatic(&FTopButtonDropdown::OnExportToLevelSequence))
 	);
 
-	// Add "Open MRQ Interface" menu entry
+	MenuBuilder.AddMenuSeparator();
+
+	// Add "Generator Editor" menu entry
 	MenuBuilder.AddMenuEntry(
-		LOCTEXT("OpenMRQInterface_Label", "Open MRQ Interface"),
-		LOCTEXT("OpenMRQInterface_Tooltip", "Open Movie Render Queue Interface to render trajectories"),
-		FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Cinematics"),
-		FUIAction(FExecuteAction::CreateStatic(&FTopButtonDropdown::OnOpenMRQInterface))
+		LOCTEXT("OpenGeneratorEditor_Label", "Generator Editor"),
+		LOCTEXT("OpenGeneratorEditor_Tooltip", "Open the trajectory generator editor to build and run a generator stack"),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Settings"),
+		FUIAction(FExecuteAction::CreateStatic(&FTopButtonDropdown::OnOpenGeneratorEditor))
 	);
 
 	MenuBuilder.AddMenuSeparator();
@@ -244,6 +247,11 @@ void FTopButtonDropdown::OnLoadTrajectoriesFromJSON()
 void FTopButtonDropdown::OnOpenMRQInterface()
 {
 	CDGMRQInterfaceWindow::OpenWindow();
+}
+
+void FTopButtonDropdown::OnOpenGeneratorEditor()
+{
+	CDGGeneratorEditor::OpenWindow();
 }
 
 #undef LOCTEXT_NAMESPACE

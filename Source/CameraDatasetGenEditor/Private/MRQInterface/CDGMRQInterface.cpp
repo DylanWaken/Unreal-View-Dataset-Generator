@@ -3,6 +3,7 @@
 #include "MRQInterface/CDGMRQInterface.h"
 #include "Trajectory/CDGTrajectory.h"
 #include "Trajectory/CDGKeyframe.h"
+#include "Trajectory/CDGTrajectorySubsystem.h"
 #include "IO/TrajectorySL.h"
 #include "LogCameraDatasetGenEditor.h"
 #include "LevelSequenceInterface/CDGLevelSeqSubsystem.h"
@@ -37,6 +38,7 @@
 
 #include "CineCameraActor.h"
 #include "CineCameraComponent.h"
+#include "CineCameraSettings.h"
 
 #include "EngineUtils.h"
 #include "Engine/World.h"
@@ -95,6 +97,180 @@ namespace CDGMRQInterface
 		}
 
 		return RenderTrajectories(Trajectories, Config);
+	}
+
+	bool RenderTrajectoriesWithSequence(ULevelSequence* MasterSequence, const TArray<ACDGTrajectory*>& Trajectories, const FTrajectoryRenderConfig& Config, TFunction<void(bool)> OnCompleted)
+	{
+		// Delegate to the base implementation but intercept the executor's finish event.
+		// We duplicate the executor-binding logic here so that OnCompleted fires after the
+		// existing visualizer-restore and video-cleanup callbacks already in the base overload.
+		// The simplest way is to wrap it: call the base overload on a separate path, but that
+		// would double-bind OnExecutorFinished.  Instead we just implement the full body here
+		// and call the base variant only when no callback is supplied.
+		if (!OnCompleted)
+		{
+			return RenderTrajectoriesWithSequence(MasterSequence, Trajectories, Config);
+		}
+
+		if (Trajectories.Num() == 0)
+		{
+			UE_LOG(LogCameraDatasetGenEditor, Warning, TEXT("CDGMRQInterface: No trajectories provided"));
+			return false;
+		}
+
+		if (Config.DestinationRootDir.IsEmpty())
+		{
+			UE_LOG(LogCameraDatasetGenEditor, Error, TEXT("CDGMRQInterface: Destination root directory is empty"));
+			return false;
+		}
+
+		if (!MasterSequence)
+		{
+			UE_LOG(LogCameraDatasetGenEditor, Error, TEXT("CDGMRQInterface: Master sequence is null"));
+			return false;
+		}
+
+		UWorld* World = nullptr;
+#if WITH_EDITOR
+		if (GEditor)
+		{
+			World = GEditor->GetEditorWorldContext().World();
+		}
+#endif
+		if (!World)
+		{
+			UE_LOG(LogCameraDatasetGenEditor, Error, TEXT("CDGMRQInterface: No valid world context found"));
+			return false;
+		}
+
+		FString LevelName = World->GetMapName();
+		LevelName.RemoveFromStart(World->StreamingLevelsPrefix);
+
+		if (!Internal::ValidateMasterSequence(MasterSequence, Trajectories, LevelName))
+		{
+			UE_LOG(LogCameraDatasetGenEditor, Error, TEXT("CDGMRQInterface: Master sequence validation failed."));
+			return false;
+		}
+
+		FString LevelOutputDir = Internal::SetupOutputDirectory(Config.DestinationRootDir, LevelName);
+		if (LevelOutputDir.IsEmpty())
+		{
+			UE_LOG(LogCameraDatasetGenEditor, Error, TEXT("CDGMRQInterface: Failed to setup output directory"));
+			return false;
+		}
+
+		UMoviePipelineQueueEngineSubsystem* MRQSubsystem = GEngine->GetEngineSubsystem<UMoviePipelineQueueEngineSubsystem>();
+		if (!MRQSubsystem)
+		{
+			UE_LOG(LogCameraDatasetGenEditor, Error, TEXT("CDGMRQInterface: Failed to get MoviePipelineQueueEngineSubsystem"));
+			return false;
+		}
+
+		if (UMoviePipelineExecutorBase* ActiveExecutor = MRQSubsystem->GetActiveExecutor())
+		{
+			UE_LOG(LogCameraDatasetGenEditor, Warning, TEXT("CDGMRQInterface: Render request ignored because MRQ is already rendering."));
+			return false;
+		}
+
+		UMoviePipelineQueue* Queue = MRQSubsystem->GetQueue();
+		if (!Queue)
+		{
+			UE_LOG(LogCameraDatasetGenEditor, Error, TEXT("CDGMRQInterface: Failed to get movie pipeline queue"));
+			return false;
+		}
+
+		Queue->DeleteAllJobs();
+
+		TArray<UMoviePipelineExecutorJob*> CreatedJobs;
+		for (ACDGTrajectory* Trajectory : Trajectories)
+		{
+			if (!Trajectory) continue;
+
+			ULevelSequence* ShotSequence = nullptr;
+			if (!Internal::FindExistingShotSequence(Trajectory, LevelName, ShotSequence))
+			{
+				UE_LOG(LogCameraDatasetGenEditor, Error, TEXT("CDGMRQInterface: Failed to find shot sequence for trajectory: %s"),
+					*Trajectory->TrajectoryName.ToString());
+				continue;
+			}
+
+			UMoviePipelineExecutorJob* Job = Queue->AllocateNewJob(UMoviePipelineExecutorJob::StaticClass());
+			if (!Job)
+			{
+				UE_LOG(LogCameraDatasetGenEditor, Error, TEXT("CDGMRQInterface: Failed to allocate job for trajectory: %s"),
+					*Trajectory->TrajectoryName.ToString());
+				continue;
+			}
+
+			Job->Sequence = FSoftObjectPath(ShotSequence);
+			Job->Map = FSoftObjectPath(World);
+
+			if (!Internal::ConfigureMoviePipelineJob(Job, Trajectory, Config, LevelName))
+			{
+				UE_LOG(LogCameraDatasetGenEditor, Error, TEXT("CDGMRQInterface: Failed to configure job for trajectory: %s"),
+					*Trajectory->TrajectoryName.ToString());
+				continue;
+			}
+
+			CreatedJobs.Add(Job);
+		}
+
+		if (CreatedJobs.Num() == 0)
+		{
+			UE_LOG(LogCameraDatasetGenEditor, Error, TEXT("CDGMRQInterface: No jobs were created"));
+			return false;
+		}
+
+		if (Config.bExportIndexJSON)
+		{
+			Internal::ExportIndexJSON(LevelOutputDir, Trajectories, Config.OutputFramerateOverride);
+		}
+
+		UCDGTrajectorySubsystem* TrajectorySubsystem = World->GetSubsystem<UCDGTrajectorySubsystem>();
+		const bool bRestoreVisualizersAfterRender = (TrajectorySubsystem != nullptr);
+		if (TrajectorySubsystem)
+		{
+			TrajectorySubsystem->DisableAllVisualizers();
+		}
+
+		UMoviePipelinePIEExecutor* Executor = Cast<UMoviePipelinePIEExecutor>(MRQSubsystem->RenderQueueWithExecutor(UMoviePipelinePIEExecutor::StaticClass()));
+
+		if (Executor)
+		{
+			const TWeakObjectPtr<UCDGTrajectorySubsystem> WeakTrajectorySubsystem = TrajectorySubsystem;
+
+			Executor->OnExecutorFinished().AddLambda([LevelOutputDir, Config, bRestoreVisualizersAfterRender, WeakTrajectorySubsystem, OnCompleted = MoveTemp(OnCompleted)](UMoviePipelineExecutorBase* InExecutor, bool bSuccess)
+			{
+				if (bRestoreVisualizersAfterRender && WeakTrajectorySubsystem.IsValid())
+				{
+					WeakTrajectorySubsystem->RestoreVisualizerStates();
+				}
+
+				if (bSuccess && Config.ExportFormat == ECDGRenderOutputFormat::H264_Video)
+				{
+					Internal::ValidateAndCleanupVideoOutput(LevelOutputDir);
+				}
+
+				if (OnCompleted)
+				{
+					OnCompleted(bSuccess);
+				}
+			});
+		}
+		else
+		{
+			UE_LOG(LogCameraDatasetGenEditor, Error, TEXT("CDGMRQInterface: Failed to start Movie Render Queue executor"));
+			if (bRestoreVisualizersAfterRender && TrajectorySubsystem)
+			{
+				TrajectorySubsystem->RestoreVisualizerStates();
+			}
+			return false;
+		}
+
+		UE_LOG(LogCameraDatasetGenEditor, Log, TEXT("CDGMRQInterface: Started rendering %d trajectories to: %s"),
+			CreatedJobs.Num(), *LevelOutputDir);
+
+		return true;
 	}
 
 	bool RenderTrajectoriesWithSequence(ULevelSequence* MasterSequence, const TArray<ACDGTrajectory*>& Trajectories, const FTrajectoryRenderConfig& Config)
@@ -167,6 +343,13 @@ namespace CDGMRQInterface
 			return false;
 		}
 
+		// Guard against starting a new queue while another render is still active.
+		if (UMoviePipelineExecutorBase* ActiveExecutor = MRQSubsystem->GetActiveExecutor())
+		{
+			UE_LOG(LogCameraDatasetGenEditor, Warning, TEXT("CDGMRQInterface: Render request ignored because MRQ is already rendering."));
+			return false;
+		}
+
 		// Get or create queue
 		UMoviePipelineQueue* Queue = MRQSubsystem->GetQueue();
 		if (!Queue)
@@ -174,6 +357,9 @@ namespace CDGMRQInterface
 			UE_LOG(LogCameraDatasetGenEditor, Error, TEXT("CDGMRQInterface: Failed to get movie pipeline queue"));
 			return false;
 		}
+
+		// MRQ queue is persistent across runs; clear it so old jobs do not get re-rendered.
+		Queue->DeleteAllJobs();
 
 		// Create jobs for each trajectory using existing shot sequences
 		TArray<UMoviePipelineExecutorJob*> CreatedJobs;
@@ -231,26 +417,46 @@ namespace CDGMRQInterface
 			Internal::ExportIndexJSON(LevelOutputDir, Trajectories, Config.OutputFramerateOverride);
 		}
 
-		// Setup callback to validate and cleanup after rendering completes
-		if (MRQSubsystem->GetActiveExecutor())
+		// Disable trajectory/keyframe debug visualizers while rendering so overlays do not appear in output.
+		UCDGTrajectorySubsystem* TrajectorySubsystem = World->GetSubsystem<UCDGTrajectorySubsystem>();
+		const bool bRestoreVisualizersAfterRender = (TrajectorySubsystem != nullptr);
+		if (TrajectorySubsystem)
 		{
-			MRQSubsystem->GetActiveExecutor()->OnExecutorFinished().RemoveAll(MRQSubsystem->GetActiveExecutor());
+			TrajectorySubsystem->DisableAllVisualizers();
 		}
-		
+
 		// Execute the queue using PIE executor (for editor usage)
 		UMoviePipelinePIEExecutor* Executor = Cast<UMoviePipelinePIEExecutor>(MRQSubsystem->RenderQueueWithExecutor(UMoviePipelinePIEExecutor::StaticClass()));
 		
 		if (Executor)
 		{
+			const TWeakObjectPtr<UCDGTrajectorySubsystem> WeakTrajectorySubsystem = TrajectorySubsystem;
+
 			// Bind callback for when all rendering completes
-			Executor->OnExecutorFinished().AddLambda([LevelOutputDir, Config](UMoviePipelineExecutorBase* InExecutor, bool bSuccess)
+			Executor->OnExecutorFinished().AddLambda([LevelOutputDir, Config, bRestoreVisualizersAfterRender, WeakTrajectorySubsystem](UMoviePipelineExecutorBase* InExecutor, bool bSuccess)
 			{
+				if (bRestoreVisualizersAfterRender && WeakTrajectorySubsystem.IsValid())
+				{
+					WeakTrajectorySubsystem->RestoreVisualizerStates();
+				}
+
 				if (bSuccess && Config.ExportFormat == ECDGRenderOutputFormat::H264_Video)
 				{
 					UE_LOG(LogCameraDatasetGenEditor, Log, TEXT("CDGMRQInterface: Render completed, validating MP4 files and cleaning up PNG frames..."));
 					Internal::ValidateAndCleanupVideoOutput(LevelOutputDir);
 				}
 			});
+		}
+		else
+		{
+			UE_LOG(LogCameraDatasetGenEditor, Error, TEXT("CDGMRQInterface: Failed to start Movie Render Queue executor"));
+
+			if (bRestoreVisualizersAfterRender && TrajectorySubsystem)
+			{
+				TrajectorySubsystem->RestoreVisualizerStates();
+			}
+
+			return false;
 		}
 
 		UE_LOG(LogCameraDatasetGenEditor, Log, TEXT("CDGMRQInterface: Started rendering %d trajectories to: %s"), 
@@ -349,7 +555,8 @@ namespace CDGMRQInterface
 			FString MasterPackagePath = FPackageName::GetLongPackagePath(MasterPackageName);
 
 			// Build shot sequence name (same format as LevelSeqExporter)
-			FString ShotName = FString::Printf(TEXT("Shot_%s"), *Trajectory->TrajectoryName.ToString());
+			const FString MasterSequenceName = FPackageName::GetShortName(MasterPackageName);
+			FString ShotName = FString::Printf(TEXT("%s_Shot_%s"), *MasterSequenceName, *Trajectory->TrajectoryName.ToString());
 			FString ShotPackageName = MasterPackagePath / ShotName;
 			FString ShotAssetPath = ShotPackageName + TEXT(".") + ShotName;
 
@@ -683,7 +890,7 @@ namespace CDGMRQInterface
 				}
 			}
 
-			// Add focal length track
+			// Add lens tracks
 			UCineCameraComponent* CameraComponent = CameraActor->GetCineCameraComponent();
 			if (CameraComponent)
 			{
@@ -695,8 +902,26 @@ namespace CDGMRQInterface
 				}
 				OutSequence->BindPossessableObject(ComponentGuid, *CameraComponent, CameraActor);
 
-				UMovieSceneFloatTrack* FocalLengthTrack = MovieScene->AddTrack<UMovieSceneFloatTrack>(ComponentGuid);
-				if (FocalLengthTrack)
+				TArray<ACDGKeyframe*> TrajectoryKeyframes = Trajectory->GetSortedKeyframes();
+				const bool bAnyManualFocus = TrajectoryKeyframes.ContainsByPredicate([](const ACDGKeyframe* Keyframe)
+				{
+					return Keyframe && Keyframe->LensSettings.bUseManualFocusDistance;
+				});
+				CameraComponent->FocusSettings.FocusMethod = bAnyManualFocus ? ECameraFocusMethod::Manual : ECameraFocusMethod::Disable;
+
+				auto AddLensKeyWithStay = [&](FMovieSceneFloatChannel& Channel, double& CurrentTimeSeconds, const ACDGKeyframe* Keyframe, float Value)
+				{
+					const FFrameNumber KeyTime = FFrameNumber(static_cast<int32>(CurrentTimeSeconds * TickResolution));
+					Channel.AddLinearKey(KeyTime, Value);
+					if (Keyframe->TimeAtCurrentFrame > KINDA_SMALL_NUMBER)
+					{
+						CurrentTimeSeconds += Keyframe->TimeAtCurrentFrame;
+						const FFrameNumber EndKeyTime = FFrameNumber(static_cast<int32>(CurrentTimeSeconds * TickResolution));
+						Channel.AddLinearKey(EndKeyTime, Value);
+					}
+				};
+
+				if (UMovieSceneFloatTrack* FocalLengthTrack = MovieScene->AddTrack<UMovieSceneFloatTrack>(ComponentGuid))
 				{
 					FocalLengthTrack->SetPropertyNameAndPath(GET_MEMBER_NAME_CHECKED(UCineCameraComponent, CurrentFocalLength), "CurrentFocalLength");
 					UMovieSceneFloatSection* FocalSection = Cast<UMovieSceneFloatSection>(FocalLengthTrack->CreateNewSection());
@@ -704,28 +929,62 @@ namespace CDGMRQInterface
 					FocalSection->SetRange(TRange<FFrameNumber>(0, DurationInTicks));
 
 					FMovieSceneFloatChannel& FocalChannel = FocalSection->GetChannel();
-					TArray<ACDGKeyframe*> TrajectoryKeyframes = Trajectory->GetSortedKeyframes();
 					double CurrentTimeSeconds = 0.0;
-
 					for (int32 k = 0; k < TrajectoryKeyframes.Num(); ++k)
 					{
-						ACDGKeyframe* Keyframe = TrajectoryKeyframes[k];
+						const ACDGKeyframe* Keyframe = TrajectoryKeyframes[k];
 						if (!Keyframe) continue;
+						if (k > 0)
+						{
+							CurrentTimeSeconds += Keyframe->TimeToCurrentFrame;
+						}
+						AddLensKeyWithStay(FocalChannel, CurrentTimeSeconds, Keyframe, Keyframe->LensSettings.FocalLength);
+					}
+				}
 
+				if (UMovieSceneFloatTrack* ApertureTrack = MovieScene->AddTrack<UMovieSceneFloatTrack>(ComponentGuid))
+				{
+					ApertureTrack->SetPropertyNameAndPath(GET_MEMBER_NAME_CHECKED(UCineCameraComponent, CurrentAperture), "CurrentAperture");
+					UMovieSceneFloatSection* ApertureSection = Cast<UMovieSceneFloatSection>(ApertureTrack->CreateNewSection());
+					ApertureTrack->AddSection(*ApertureSection);
+					ApertureSection->SetRange(TRange<FFrameNumber>(0, DurationInTicks));
+
+					FMovieSceneFloatChannel& ApertureChannel = ApertureSection->GetChannel();
+					double CurrentTimeSeconds = 0.0;
+					for (int32 k = 0; k < TrajectoryKeyframes.Num(); ++k)
+					{
+						const ACDGKeyframe* Keyframe = TrajectoryKeyframes[k];
+						if (!Keyframe) continue;
+						if (k > 0)
+						{
+							CurrentTimeSeconds += Keyframe->TimeToCurrentFrame;
+						}
+						AddLensKeyWithStay(ApertureChannel, CurrentTimeSeconds, Keyframe, Keyframe->LensSettings.Aperture);
+					}
+				}
+
+				if (UMovieSceneFloatTrack* ManualFocusTrack = MovieScene->AddTrack<UMovieSceneFloatTrack>(ComponentGuid))
+				{
+					ManualFocusTrack->SetPropertyNameAndPath(TEXT("FocusSettings.ManualFocusDistance"), TEXT("FocusSettings.ManualFocusDistance"));
+					UMovieSceneFloatSection* ManualFocusSection = Cast<UMovieSceneFloatSection>(ManualFocusTrack->CreateNewSection());
+					ManualFocusTrack->AddSection(*ManualFocusSection);
+					ManualFocusSection->SetRange(TRange<FFrameNumber>(0, DurationInTicks));
+
+					FMovieSceneFloatChannel& ManualFocusChannel = ManualFocusSection->GetChannel();
+					double CurrentTimeSeconds = 0.0;
+					for (int32 k = 0; k < TrajectoryKeyframes.Num(); ++k)
+					{
+						const ACDGKeyframe* Keyframe = TrajectoryKeyframes[k];
+						if (!Keyframe) continue;
 						if (k > 0)
 						{
 							CurrentTimeSeconds += Keyframe->TimeToCurrentFrame;
 						}
 
-						FFrameNumber KeyTime = FFrameNumber(static_cast<int32>(CurrentTimeSeconds * TickResolution));
-						FocalChannel.AddLinearKey(KeyTime, Keyframe->LensSettings.FocalLength);
-
-						if (Keyframe->TimeAtCurrentFrame > KINDA_SMALL_NUMBER)
-						{
-							CurrentTimeSeconds += Keyframe->TimeAtCurrentFrame;
-							FFrameNumber EndKeyTime = FFrameNumber(static_cast<int32>(CurrentTimeSeconds * TickResolution));
-							FocalChannel.AddLinearKey(EndKeyTime, Keyframe->LensSettings.FocalLength);
-						}
+						const float ManualFocusDistance = Keyframe->LensSettings.bUseManualFocusDistance
+							? Keyframe->LensSettings.FocusDistance
+							: 0.0f;
+						AddLensKeyWithStay(ManualFocusChannel, CurrentTimeSeconds, Keyframe, ManualFocusDistance);
 					}
 				}
 			}

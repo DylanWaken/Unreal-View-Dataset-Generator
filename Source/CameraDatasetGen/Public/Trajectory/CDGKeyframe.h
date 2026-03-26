@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "Anchor/CDGCharacterAnchor.h"
 #include "Trajectory/CDGKeyframeVisualizer.h"
 #include "CDGKeyframe.generated.h"
 
@@ -90,8 +91,20 @@ struct FCDGCameraLensSettings
 	float Aperture = 2.8f;
 
 	/** Focus distance in cm */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lens", meta = (ClampMin = "0.0", ClampMax = "999999.0", UIMin = "10.0", UIMax = "10000.0"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lens", meta = (ClampMin = "0.0", ClampMax = "999999.0", UIMin = "10.0", UIMax = "10000.0", EditCondition = "AutofocusTargetActor==nullptr"))
 	float FocusDistance = 100000.0f;
+
+	/** Optional actor used to auto-calculate focus distance from keyframe camera position */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lens")
+	TObjectPtr<AActor> AutofocusTargetActor = nullptr;
+
+	/** Anchor slot to focus when autofocus target actor is set */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lens", meta = (EditCondition = "AutofocusTargetActor!=nullptr"))
+	AnchorType AutofocusTargetAnchorType = AnchorType::CDG_ANCHOR_HEAD;
+
+	/** Use manual focus distance instead of disabling focus override */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lens", meta = (EditCondition = "AutofocusTargetActor==nullptr"))
+	bool bUseManualFocusDistance = true;
 
 	/** Diaphragm blade count (for bokeh shape) */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lens", meta = (ClampMin = "4", ClampMax = "16"))

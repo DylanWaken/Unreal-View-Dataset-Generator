@@ -11,6 +11,8 @@
 
 #if WITH_EDITOR
 #include "AssetToolsModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "IAssetTools.h"
 #include "ObjectTools.h"
 #include "FileHelpers.h"
@@ -94,24 +96,44 @@ void UCDGLevelSeqSubsystem::DeleteLevelSequence()
 		return;
 	}
 
-	UObject* Asset = LoadObject<UObject>(nullptr, *SequencePackageName);
-	
-	if (Asset)
+	TArray<FAssetData> AssetsToDelete;
+
+	// Add master sequence asset.
+	if (UObject* MasterAsset = LoadObject<UObject>(nullptr, *SequencePackageName))
 	{
-		// Use ObjectTools to properly delete and clean up references
-		TArray<FAssetData> AssetsToDelete;
-		if (Asset)
-		{
-			AssetsToDelete.Add(FAssetData(Asset));
-		}
-		
-		// Pass false to suppress confirmation dialog if desired, or true to be safe
-		// Here we default to true (interactive) or false (force) depending on requirements.
-		// Assuming we want it to just happen if called from code.
-		ObjectTools::DeleteAssets(AssetsToDelete, false); 
-		
-		ActiveLevelSequence = nullptr;
+		AssetsToDelete.Add(FAssetData(MasterAsset));
 	}
+
+	// Add all shot sequence assets that belong to this master sequence.
+	const FString MasterPackagePath = FPackageName::GetLongPackagePath(SequencePackageName);
+	const FString MasterSequenceName = FPackageName::GetShortName(SequencePackageName);
+	const FString ShotNamePrefix = MasterSequenceName + TEXT("_Shot_");
+
+	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+	FARFilter Filter;
+	Filter.PackagePaths.Add(FName(*MasterPackagePath));
+	Filter.bRecursivePaths = false;
+	Filter.ClassPaths.Add(ULevelSequence::StaticClass()->GetClassPathName());
+
+	TArray<FAssetData> LevelSequenceAssets;
+	AssetRegistryModule.Get().GetAssets(Filter, LevelSequenceAssets);
+
+	for (const FAssetData& AssetData : LevelSequenceAssets)
+	{
+		const FString AssetName = AssetData.AssetName.ToString();
+		if (AssetName.StartsWith(ShotNamePrefix))
+		{
+			AssetsToDelete.Add(AssetData);
+		}
+	}
+
+	if (AssetsToDelete.Num() > 0)
+	{
+		// Delete master sequence and its child shot sequences together.
+		ObjectTools::DeleteAssets(AssetsToDelete, false);
+	}
+
+	ActiveLevelSequence = nullptr;
 #else
 	UE_LOG(LogTemp, Warning, TEXT("CDGLevelSeqSubsystem: Cannot delete Level Sequence at runtime. This is an Editor-only operation."));
 #endif

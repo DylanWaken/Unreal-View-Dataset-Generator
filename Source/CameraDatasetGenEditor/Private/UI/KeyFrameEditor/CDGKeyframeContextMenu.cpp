@@ -11,6 +11,8 @@
 #include "Styling/AppStyle.h"
 #include "Editor.h"
 #include "ScopedTransaction.h"
+#include "AssetRegistry/AssetData.h"
+#include "PropertyCustomizationHelpers.h"
 #include "Widgets/Input/SNumericEntryBox.h"
 #include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Input/SMultiLineEditableTextBox.h"
@@ -20,6 +22,7 @@
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SUniformGridPanel.h"
 #include "Widgets/SBoxPanel.h"
+#include "GameFramework/Actor.h"
 
 #define LOCTEXT_NAMESPACE "CDGKeyframeContextMenu"
 
@@ -928,6 +931,238 @@ void FCDGKeyframeContextMenu::FillCameraSubmenu(FMenuBuilder& MenuBuilder, const
 			FText::GetEmpty()
 		);
 
+		// Autofocus Target Actor selector
+		MenuBuilder.AddWidget(
+			SNew(SBox)
+			.Padding(FMargin(4.0f, 2.0f))
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				.Padding(0, 0, 8, 0)
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("AutofocusTargetActorLabel", "Autofocus Target Actor:"))
+					.MinDesiredWidth(120.0f)
+				]
+				+ SHorizontalBox::Slot()
+				.FillWidth(1.0f)
+				[
+					SNew(SObjectPropertyEntryBox)
+					.AllowedClass(AActor::StaticClass())
+					.ObjectPath_Lambda([SelectedKeyframes]() -> FString
+					{
+						if (SelectedKeyframes.Num() == 0)
+						{
+							return FString();
+						}
+
+						AActor* FirstActor = SelectedKeyframes[0]->LensSettings.AutofocusTargetActor.Get();
+						for (ACDGKeyframe* Keyframe : SelectedKeyframes)
+						{
+							if (Keyframe->LensSettings.AutofocusTargetActor.Get() != FirstActor)
+							{
+								return FString();
+							}
+						}
+
+						return FirstActor ? FirstActor->GetPathName() : FString();
+					})
+					.OnObjectChanged_Lambda([SelectedKeyframes](const FAssetData& AssetData)
+					{
+						const FScopedTransaction Transaction(LOCTEXT("SetAutofocusTargetActor", "Set Autofocus Target Actor"));
+						AActor* NewTargetActor = Cast<AActor>(AssetData.GetAsset());
+						for (ACDGKeyframe* Keyframe : SelectedKeyframes)
+						{
+							Keyframe->Modify();
+							Keyframe->LensSettings.AutofocusTargetActor = NewTargetActor;
+						}
+						GEditor->RedrawLevelEditingViewports();
+					})
+					.AllowClear(true)
+					.DisplayUseSelected(true)
+					.DisplayBrowse(true)
+					.ToolTipText(LOCTEXT("AutofocusTargetActorTooltip", "If set, focus distance is automatically computed from camera-to-actor distance at this keyframe."))
+				]
+			],
+			FText::GetEmpty()
+		);
+
+		// Autofocus Target Anchor Slot selector
+		MenuBuilder.AddWidget(
+			SNew(SBox)
+			.Padding(FMargin(4.0f, 2.0f))
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				.Padding(0, 0, 8, 0)
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("AutofocusAnchorSlotLabel", "Autofocus Anchor Slot:"))
+					.MinDesiredWidth(120.0f)
+				]
+				+ SHorizontalBox::Slot()
+				.FillWidth(1.0f)
+				[
+					SNew(SComboButton)
+					.IsEnabled_Lambda([SelectedKeyframes]()
+					{
+						for (ACDGKeyframe* Keyframe : SelectedKeyframes)
+						{
+							if (Keyframe->LensSettings.AutofocusTargetActor.Get() != nullptr)
+							{
+								return true;
+							}
+						}
+						return false;
+					})
+					.OnGetMenuContent_Lambda([SelectedKeyframes]()
+					{
+						FMenuBuilder AnchorMenuBuilder(true, nullptr);
+						auto AddAnchorEntry = [&AnchorMenuBuilder, SelectedKeyframes](AnchorType Anchor, const FText& Label)
+						{
+							AnchorMenuBuilder.AddMenuEntry(
+								Label,
+								FText::GetEmpty(),
+								FSlateIcon(),
+								FUIAction(
+									FExecuteAction::CreateLambda([SelectedKeyframes, Anchor]()
+									{
+										const FScopedTransaction Transaction(LOCTEXT("SetAutofocusAnchorSlot", "Set Autofocus Anchor Slot"));
+										for (ACDGKeyframe* Keyframe : SelectedKeyframes)
+										{
+											if (Keyframe->LensSettings.AutofocusTargetActor.Get() != nullptr)
+											{
+												Keyframe->Modify();
+												Keyframe->LensSettings.AutofocusTargetAnchorType = Anchor;
+											}
+										}
+									})
+								)
+							);
+						};
+
+						AddAnchorEntry(AnchorType::CDG_ANCHOR_HEAD, LOCTEXT("AnchorHead", "Head"));
+						AddAnchorEntry(AnchorType::CDG_ANCHOR_PELVIS, LOCTEXT("AnchorPelvis", "Pelvis"));
+						AddAnchorEntry(AnchorType::CDG_ANCHOR_FEET_LEFT, LOCTEXT("AnchorLeftFoot", "Left Foot"));
+						AddAnchorEntry(AnchorType::CDG_ANCHOR_FEET_RIGHT, LOCTEXT("AnchorRightFoot", "Right Foot"));
+						AddAnchorEntry(AnchorType::CDG_ANCHOR_HAND_LEFT, LOCTEXT("AnchorLeftHand", "Left Hand"));
+						AddAnchorEntry(AnchorType::CDG_ANCHOR_HAND_RIGHT, LOCTEXT("AnchorRightHand", "Right Hand"));
+
+						return AnchorMenuBuilder.MakeWidget();
+					})
+					.ButtonContent()
+					[
+						SNew(STextBlock)
+						.Text_Lambda([SelectedKeyframes]()
+						{
+							if (SelectedKeyframes.Num() == 0)
+							{
+								return LOCTEXT("AnchorSlotNone", "None");
+							}
+
+							const AnchorType FirstAnchor = SelectedKeyframes[0]->LensSettings.AutofocusTargetAnchorType;
+							for (ACDGKeyframe* Keyframe : SelectedKeyframes)
+							{
+								if (Keyframe->LensSettings.AutofocusTargetAnchorType != FirstAnchor)
+								{
+									return LOCTEXT("MultipleValues", "(Multiple)");
+								}
+							}
+
+							switch (FirstAnchor)
+							{
+								case AnchorType::CDG_ANCHOR_HEAD: return LOCTEXT("AnchorHead", "Head");
+								case AnchorType::CDG_ANCHOR_PELVIS: return LOCTEXT("AnchorPelvis", "Pelvis");
+								case AnchorType::CDG_ANCHOR_FEET_LEFT: return LOCTEXT("AnchorLeftFoot", "Left Foot");
+								case AnchorType::CDG_ANCHOR_FEET_RIGHT: return LOCTEXT("AnchorRightFoot", "Right Foot");
+								case AnchorType::CDG_ANCHOR_HAND_LEFT: return LOCTEXT("AnchorLeftHand", "Left Hand");
+								case AnchorType::CDG_ANCHOR_HAND_RIGHT: return LOCTEXT("AnchorRightHand", "Right Hand");
+								default: return LOCTEXT("AnchorHead", "Head");
+							}
+						})
+					]
+					.ToolTipText(LOCTEXT("AutofocusAnchorSlotTooltip", "Anchor slot used for autofocus when target actor has matching CDG anchor component."))
+				]
+			],
+			FText::GetEmpty()
+		);
+
+		// Manual Focus Toggle
+		MenuBuilder.AddWidget(
+			SNew(SBox)
+			.Padding(FMargin(4.0f, 2.0f))
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				.Padding(0, 0, 8, 0)
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("UseManualFocusLabel", "Use Manual Focus:"))
+					.MinDesiredWidth(120.0f)
+				]
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				[
+					SNew(SCheckBox)
+					.IsEnabled_Lambda([SelectedKeyframes]()
+					{
+						for (ACDGKeyframe* Keyframe : SelectedKeyframes)
+						{
+							if (Keyframe->LensSettings.AutofocusTargetActor.Get() != nullptr)
+							{
+								return false;
+							}
+						}
+						return true;
+					})
+					.IsChecked_Lambda([SelectedKeyframes]() -> ECheckBoxState
+					{
+						if (SelectedKeyframes.Num() == 0)
+						{
+							return ECheckBoxState::Undetermined;
+						}
+
+						const bool bFirstValue = SelectedKeyframes[0]->LensSettings.bUseManualFocusDistance;
+						for (ACDGKeyframe* Keyframe : SelectedKeyframes)
+						{
+							if (Keyframe->LensSettings.bUseManualFocusDistance != bFirstValue)
+							{
+								return ECheckBoxState::Undetermined;
+							}
+						}
+						return bFirstValue ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+					})
+					.OnCheckStateChanged_Lambda([SelectedKeyframes](ECheckBoxState NewState)
+					{
+						for (ACDGKeyframe* Keyframe : SelectedKeyframes)
+						{
+							if (Keyframe->LensSettings.AutofocusTargetActor.Get() != nullptr)
+							{
+								return;
+							}
+						}
+
+						const FScopedTransaction Transaction(LOCTEXT("SetUseManualFocusDistance", "Set Manual Focus Mode"));
+						const bool bEnableManualFocus = (NewState == ECheckBoxState::Checked);
+						for (ACDGKeyframe* Keyframe : SelectedKeyframes)
+						{
+							Keyframe->Modify();
+							Keyframe->LensSettings.bUseManualFocusDistance = bEnableManualFocus;
+						}
+						GEditor->RedrawLevelEditingViewports();
+					})
+				]
+			],
+			FText::GetEmpty()
+		);
+
 		// Focus Distance Editor
 		MenuBuilder.AddWidget(
 			SNew(SBox)
@@ -948,6 +1183,22 @@ void FCDGKeyframeContextMenu::FillCameraSubmenu(FMenuBuilder& MenuBuilder, const
 				[
 					SNew(SNumericEntryBox<float>)
 					.MinDesiredValueWidth(130.0f)
+					.IsEnabled_Lambda([SelectedKeyframes]()
+					{
+						for (ACDGKeyframe* Keyframe : SelectedKeyframes)
+						{
+							if (Keyframe->LensSettings.AutofocusTargetActor.Get() != nullptr)
+							{
+								return false;
+							}
+
+							if (Keyframe->LensSettings.bUseManualFocusDistance)
+							{
+								return true;
+							}
+						}
+						return false;
+					})
 					.AllowSpin(true)
 					.MinValue(FCDGCameraLensSettings::FocusDistanceMin)
 					.MaxValue(FCDGCameraLensSettings::FocusDistanceMax)
