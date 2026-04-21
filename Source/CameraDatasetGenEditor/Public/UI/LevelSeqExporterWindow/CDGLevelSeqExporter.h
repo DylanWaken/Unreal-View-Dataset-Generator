@@ -14,6 +14,7 @@
 
 class ACDGTrajectory;
 class ULevelSequence;
+class ULevelSeqExportConfig;
 class UMovieScene;
 struct FAssetData;
 
@@ -71,10 +72,15 @@ private:
     bool IsFFmpegAvailable() const;
     bool DoesFormatRequireFFmpeg() const;
 
+    // ----- Config save / load -----
+    void OnLoadConfigChanged(const FAssetData& AssetData);
+    FString GetLoadedConfigPath() const;
+    FReply OnSaveConfigClicked();
+    void ApplyConfigToUI(const ULevelSeqExportConfig* Config);
+    void PopulateConfigFromUI(ULevelSeqExportConfig* Config) const;
+
     // ----- Button handlers -----
     FReply OnCancelClicked();
-    FReply OnExportClicked();
-    FReply OnExportJSONClicked();
     FReply OnRenderClicked();
     FReply OnBrowseOutputDirClicked();
 
@@ -116,6 +122,9 @@ private:
     // Output format combo data
     TArray<TSharedPtr<ECDGRenderOutputFormat>> OutputFormatOptions;
     TSharedPtr<ECDGRenderOutputFormat> SelectedOutputFormat;
+
+    // Currently loaded export config asset (used for save-in-place)
+    TWeakObjectPtr<ULevelSeqExportConfig> LoadedConfig;
 };
 
 /**

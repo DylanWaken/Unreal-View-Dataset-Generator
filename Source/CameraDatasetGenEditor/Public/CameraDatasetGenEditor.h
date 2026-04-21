@@ -7,6 +7,7 @@
 class FTopButton;
 class FCDGKeyframeContextMenu;
 class FCDGCameraPreviewContextMenu;
+class IAssetTypeActions;
 
 class FCameraDatasetGenEditorModule : public IModuleInterface
 {
@@ -34,5 +35,14 @@ private:
 
 	/** Handle to the module loaded delegate */
 	FDelegateHandle ModuleLoadedDelegateHandle;
+
+	/** Asset type actions for ULevelSeqExportConfig */
+	TSharedPtr<IAssetTypeActions> LevelSeqExportConfigTypeActions;
+
+	/** Asset type actions for UGeneratorStackConfig */
+	TSharedPtr<IAssetTypeActions> GeneratorStackConfigTypeActions;
+
+	/** Asset type actions for UBatchProcConfig */
+	TSharedPtr<IAssetTypeActions> BatchProcConfigTypeActions;
 };
 

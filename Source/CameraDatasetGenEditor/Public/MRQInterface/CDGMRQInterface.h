@@ -70,6 +70,16 @@ struct FTrajectoryRenderConfig
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Output")
 	bool bOverwriteExistingOutput = false;
 
+	/**
+	 * Optional override for the subdirectory name placed under DestinationRootDir.
+	 * When empty the level's map name is used (default behaviour).
+	 * Set this to a ComboKey (e.g. "Level_Anchor_Char_Anim") so the batch processor
+	 * can produce the desired output structure:
+	 *   DestinationRootDir/<LevelNameOverride>/OUTPUTS/
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Output")
+	FString LevelNameOverride;
+
 	/** Anti-aliasing settings (spatial sample count) */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Quality")
 	int32 SpatialSampleCount = 1;

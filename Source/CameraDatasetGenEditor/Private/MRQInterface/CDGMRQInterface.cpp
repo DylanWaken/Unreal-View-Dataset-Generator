@@ -143,8 +143,9 @@ namespace CDGMRQInterface
 			return false;
 		}
 
-		FString LevelName = World->GetMapName();
-		LevelName.RemoveFromStart(World->StreamingLevelsPrefix);
+		FString LevelName = Config.LevelNameOverride.IsEmpty()
+			? [&]{ FString N = World->GetMapName(); N.RemoveFromStart(World->StreamingLevelsPrefix); return N; }()
+			: Config.LevelNameOverride;
 
 		if (!Internal::ValidateMasterSequence(MasterSequence, Trajectories, LevelName))
 		{
@@ -309,9 +310,10 @@ namespace CDGMRQInterface
 			return false;
 		}
 
-		// Get level name
-		FString LevelName = World->GetMapName();
-		LevelName.RemoveFromStart(World->StreamingLevelsPrefix); // Remove PIE prefix if present
+		// Get level name (use override from config if provided)
+		FString LevelName = Config.LevelNameOverride.IsEmpty()
+			? [&]{ FString N = World->GetMapName(); N.RemoveFromStart(World->StreamingLevelsPrefix); return N; }()
+			: Config.LevelNameOverride;
 
 		// Validate the provided master sequence
 		UE_LOG(LogCameraDatasetGenEditor, Log, TEXT("CDGMRQInterface: Validating provided master sequence..."));

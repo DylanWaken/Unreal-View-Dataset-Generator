@@ -4,6 +4,7 @@
 #include "UI/LevelSeqExporterWindow/CDGLevelSeqExporter.h"
 #include "UI/MRQInterfaceWindow/CDGMRQInterfaceWindow.h"
 #include "UI/GeneratorEditor/CDGGeneratorEditorWindow.h"
+#include "UI/BatchProcEditor/CDGBatchProcEditorWindow.h"
 #include "Trajectory/CDGKeyframe.h"
 #include "Trajectory/CDGTrajectory.h"
 #include "Trajectory/CDGTrajectorySubsystem.h"
@@ -68,6 +69,14 @@ TSharedRef<SWidget> FTopButtonDropdown::MakeDropdownMenu()
 		LOCTEXT("OpenGeneratorEditor_Tooltip", "Open the trajectory generator editor to build and run a generator stack"),
 		FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Settings"),
 		FUIAction(FExecuteAction::CreateStatic(&FTopButtonDropdown::OnOpenGeneratorEditor))
+	);
+
+	// Add "Batch Proc Editor" menu entry
+	MenuBuilder.AddMenuEntry(
+		LOCTEXT("OpenBatchProcEditor_Label", "Batch Proc Editor"),
+		LOCTEXT("OpenBatchProcEditor_Tooltip", "Open the batch processing editor to configure levels, characters, animations and run a batch job"),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Toolbar.Play"),
+		FUIAction(FExecuteAction::CreateStatic(&FTopButtonDropdown::OnOpenBatchProcEditor))
 	);
 
 	MenuBuilder.AddMenuSeparator();
@@ -252,6 +261,11 @@ void FTopButtonDropdown::OnOpenMRQInterface()
 void FTopButtonDropdown::OnOpenGeneratorEditor()
 {
 	CDGGeneratorEditor::OpenWindow();
+}
+
+void FTopButtonDropdown::OnOpenBatchProcEditor()
+{
+	CDGBatchProcEditor::OpenWindow();
 }
 
 #undef LOCTEXT_NAMESPACE

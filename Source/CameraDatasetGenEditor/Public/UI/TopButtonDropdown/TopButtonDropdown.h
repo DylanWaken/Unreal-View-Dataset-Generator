@@ -60,4 +60,10 @@ private:
 	 * Opens the trajectory generator editor window
 	 */
 	static void OnOpenGeneratorEditor();
+
+	/**
+	 * Called when "Batch Proc Editor" is clicked
+	 * Opens the batch processing editor window
+	 */
+	static void OnOpenBatchProcEditor();
 };

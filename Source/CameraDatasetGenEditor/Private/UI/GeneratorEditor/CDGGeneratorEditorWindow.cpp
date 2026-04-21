@@ -1,6 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "UI/GeneratorEditor/CDGGeneratorEditorWindow.h"
+#include "Config/GeneratorStackConfig.h"
+#include "Config/GeneratorStackConfigFactory.h"
 
 #include "Generator/CDGTrajectoryGenerator.h"
 #include "Trajectory/CDGKeyframe.h"
@@ -36,6 +38,9 @@
 
 // Assets / IO
 #include "LevelSequence.h"
+#include "AssetToolsModule.h"
+#include "IAssetTools.h"
+#include "UObject/SavePackage.h"
 #include "DesktopPlatformModule.h"
 #include "IDesktopPlatform.h"
 #include "Misc/Paths.h"
@@ -70,14 +75,25 @@ void SGeneratorEditorWindow::Construct(const FArguments& InArgs)
 	DetailsArgs.bHideSelectionTip     = true;
 	DetailsView = PropEdModule.CreateDetailView(DetailsArgs);
 
-	// Hide base-class properties that are managed by the shared bottom panel,
-	// so the details view only shows the generator-specific configuration.
+	// Hide base-class properties managed by the shared bottom panel so the details
+	// view only shows generator-specific configuration.
 	DetailsView->SetIsPropertyVisibleDelegate(FIsPropertyVisible::CreateLambda(
 		[](const FPropertyAndParent& PropertyAndParent) -> bool
 		{
 			static const FName ReferenceSequenceName =
 				GET_MEMBER_NAME_CHECKED(UCDGTrajectoryGenerator, ReferenceSequence);
 			return PropertyAndParent.Property.GetFName() != ReferenceSequenceName;
+		}));
+
+	// When "Let Batch Processor Fill" is active, make only PrimaryCharacterActor
+	// read-only — all other generator properties remain fully editable.
+	DetailsView->SetIsPropertyReadOnlyDelegate(FIsPropertyReadOnly::CreateLambda(
+		[this](const FPropertyAndParent& PropertyAndParent) -> bool
+		{
+			if (!bLetBatchProcessorFill) return false;
+			static const FName PrimaryCharacterActorName =
+				GET_MEMBER_NAME_CHECKED(UCDGTrajectoryGenerator, PrimaryCharacterActor);
+			return PropertyAndParent.Property.GetFName() == PrimaryCharacterActorName;
 		}));
 
 	DetailsView->SetObject(nullptr);
@@ -237,10 +253,65 @@ void SGeneratorEditorWindow::Construct(const FArguments& InArgs)
 				]
 			]
 
-			// ── Shared Reference Sequence ─────────────────────────────────────
+			// ── Config Asset row ─────────────────────────────────────────────
 			+ SVerticalBox::Slot()
 			.AutoHeight()
 			.Padding(0.f, 8.f, 0.f, 0.f)
+			[
+				SNew(SHorizontalBox)
+
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				.Padding(0.f, 0.f, 8.f, 0.f)
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("ConfigAssetLabel", "Config Asset:"))
+					.MinDesiredWidth(130.f)
+					.ToolTipText(LOCTEXT("ConfigAssetTip",
+						"Select a saved generator stack config to load it, or leave empty to use current values."))
+				]
+
+				+ SHorizontalBox::Slot()
+				.FillWidth(1.f)
+				.Padding(0.f, 0.f, 5.f, 0.f)
+				[
+					SNew(SObjectPropertyEntryBox)
+					.AllowedClass(UGeneratorStackConfig::StaticClass())
+					.ObjectPath(this, &SGeneratorEditorWindow::GetConfigAssetPath)
+					.OnObjectChanged(this, &SGeneratorEditorWindow::OnLoadConfigAssetChanged)
+					.AllowClear(true)
+					.DisplayUseSelected(true)
+					.DisplayBrowse(true)
+					.ToolTipText(LOCTEXT("ConfigAssetPickerTip",
+						"Selecting an asset immediately restores the generator stack and settings from it."))
+				]
+
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				[
+					SNew(SButton)
+					.Text(LOCTEXT("SaveConfigAssetBtn", "Save Config"))
+					.ToolTipText(LOCTEXT("SaveConfigAssetTip",
+						"Save current generator stack to the selected config asset, or create a new one."))
+					.OnClicked(this, &SGeneratorEditorWindow::OnSaveConfigAssetClicked)
+				]
+			]
+
+			// ── Separator ────────────────────────────────────────────────────
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0.f, 6.f)
+			[
+				SNew(SBorder)
+				.BorderImage(FAppStyle::GetBrush("Menu.Separator"))
+				.Padding(FMargin(0.f, 1.f))
+			]
+
+			// ── Shared Reference Sequence + Batch Fill toggle ─────────────────
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0.f, 0.f, 0.f, 0.f)
 			[
 				SNew(SHorizontalBox)
 
@@ -258,6 +329,7 @@ void SGeneratorEditorWindow::Construct(const FArguments& InArgs)
 
 				+ SHorizontalBox::Slot()
 				.FillWidth(1.f)
+				.Padding(0.f, 0.f, 10.f, 0.f)
 				[
 					SNew(SObjectPropertyEntryBox)
 					.AllowedClass(ULevelSequence::StaticClass())
@@ -266,6 +338,24 @@ void SGeneratorEditorWindow::Construct(const FArguments& InArgs)
 					.AllowClear(true)
 					.DisplayUseSelected(true)
 					.DisplayBrowse(true)
+					.IsEnabled(this, &SGeneratorEditorWindow::IsRefSlotEnabled)
+				]
+
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.VAlign(VAlign_Center)
+				[
+					SNew(SCheckBox)
+					.IsChecked(this, &SGeneratorEditorWindow::GetBatchProcessorFillState)
+					.OnCheckStateChanged(this, &SGeneratorEditorWindow::OnBatchProcessorFillChanged)
+					.ToolTipText(LOCTEXT("BatchFillTip",
+						"When ticked, the reference sequence and actor fields are left empty — "
+						"the batch processor will inject them at runtime. "
+						"Generate is disabled; Export Config remains enabled."))
+					[
+						SNew(STextBlock)
+						.Text(LOCTEXT("BatchFillLabel", "Let Batch Processor Fill"))
+					]
 				]
 			]
 
@@ -637,11 +727,18 @@ FReply SGeneratorEditorWindow::OnGenerateClicked()
 
 bool SGeneratorEditorWindow::CanGenerate() const
 {
+	if (bLetBatchProcessorFill) return false;
 	return GeneratorItems.Num() > 0;
 }
 
 FText SGeneratorEditorWindow::GetGenerateTooltip() const
 {
+	if (bLetBatchProcessorFill)
+	{
+		return LOCTEXT("GenerateTipBatchMode",
+			"Generate is disabled — 'Let Batch Processor Fill' is active. "
+			"Untick it to run generation manually.");
+	}
 	if (GeneratorItems.Num() == 0)
 	{
 		return LOCTEXT("GenerateTipEmpty",
@@ -912,6 +1009,188 @@ FReply SGeneratorEditorWindow::OnCloseClicked()
 		Window->RequestDestroyWindow();
 	}
 	return FReply::Handled();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Config asset save / load
+// ─────────────────────────────────────────────────────────────────────────────
+
+namespace
+{
+	/** Serialise the current generator stack to a JSON string using the existing API. */
+	FString SerializeStackToJson(const TArray<TSharedPtr<FGeneratorStackItem>>& Items)
+	{
+		TSharedRef<FJsonObject> RootObj = MakeShared<FJsonObject>();
+		TArray<TSharedPtr<FJsonValue>> GeneratorsArray;
+
+		for (const TSharedPtr<FGeneratorStackItem>& Item : Items)
+		{
+			UCDGTrajectoryGenerator* Gen = Item ? Item->Generator : nullptr;
+			if (!Gen) continue;
+
+			TSharedRef<FJsonObject> GenObj = MakeShared<FJsonObject>();
+			GenObj->SetStringField(TEXT("class"), Gen->GetClass()->GetPathName());
+
+			TSharedPtr<FJsonObject> ConfigObj = MakeShared<FJsonObject>();
+			Gen->SerializeGeneratorConfig(ConfigObj);
+			GenObj->SetObjectField(TEXT("config"), ConfigObj);
+
+			GeneratorsArray.Add(MakeShared<FJsonValueObject>(GenObj));
+		}
+
+		RootObj->SetArrayField(TEXT("generators"), GeneratorsArray);
+
+		FString JsonString;
+		const TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&JsonString);
+		FJsonSerializer::Serialize(RootObj, Writer);
+		return JsonString;
+	}
+}
+
+FString SGeneratorEditorWindow::GetConfigAssetPath() const
+{
+	return LoadedConfigAsset.IsValid() ? LoadedConfigAsset->GetPathName() : FString();
+}
+
+void SGeneratorEditorWindow::OnLoadConfigAssetChanged(const FAssetData& AssetData)
+{
+	UGeneratorStackConfig* Config = Cast<UGeneratorStackConfig>(AssetData.GetAsset());
+	LoadedConfigAsset = Config;
+	if (!Config || Config->GeneratorsJson.IsEmpty()) return;
+
+	// Parse the stored JSON using the same path as OnLoadConfigClicked
+	TSharedPtr<FJsonObject> RootObj;
+	const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Config->GeneratorsJson);
+	if (!FJsonSerializer::Deserialize(Reader, RootObj) || !RootObj.IsValid()) return;
+
+	const TArray<TSharedPtr<FJsonValue>>* GeneratorsArray = nullptr;
+	if (!RootObj->TryGetArrayField(TEXT("generators"), GeneratorsArray) || !GeneratorsArray) return;
+
+	// Clear existing stack
+	for (const TSharedPtr<FGeneratorStackItem>& Item : GeneratorItems)
+	{
+		if (Item && Item->Generator && Item->Generator->IsRooted())
+		{
+			Item->Generator->RemoveFromRoot();
+		}
+	}
+	GeneratorItems.Empty();
+	SelectedItem.Reset();
+	if (DetailsView.IsValid()) DetailsView->SetObject(nullptr);
+
+	// Reconstruct generators
+	for (const TSharedPtr<FJsonValue>& GenValue : *GeneratorsArray)
+	{
+		const TSharedPtr<FJsonObject>* GenObjPtr = nullptr;
+		if (!GenValue->TryGetObject(GenObjPtr) || !GenObjPtr) continue;
+
+		FString ClassName;
+		if (!(*GenObjPtr)->TryGetStringField(TEXT("class"), ClassName)) continue;
+
+		UClass* Class = FindObject<UClass>(nullptr, *ClassName);
+		if (!Class) continue;
+
+		UCDGTrajectoryGenerator* Gen = CreateGeneratorInstance(Class);
+		if (!Gen) continue;
+
+		const TSharedPtr<FJsonObject>* ConfigObjPtr = nullptr;
+		if ((*GenObjPtr)->TryGetObjectField(TEXT("config"), ConfigObjPtr) && ConfigObjPtr)
+		{
+			Gen->FetchGeneratorConfig(*ConfigObjPtr);
+		}
+
+		if (SharedReferenceSequence.IsValid())
+		{
+			Gen->ReferenceSequence = SharedReferenceSequence.Get();
+		}
+
+		GeneratorItems.Add(MakeShared<FGeneratorStackItem>(Gen));
+	}
+
+	// Restore batch-fill toggle
+	bLetBatchProcessorFill = Config->bLetBatchProcessorFill;
+	if (DetailsView.IsValid()) DetailsView->ForceRefresh();
+
+	GeneratorListView->RequestListRefresh();
+
+	FNotificationInfo Info(FText::Format(
+		LOCTEXT("LoadConfigAssetSuccess", "Loaded {0} generators from config asset"),
+		FText::AsNumber(GeneratorItems.Num())));
+	Info.ExpireDuration       = 3.f;
+	Info.bUseSuccessFailIcons = true;
+	FSlateNotificationManager::Get().AddNotification(Info);
+}
+
+FReply SGeneratorEditorWindow::OnSaveConfigAssetClicked()
+{
+	IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
+
+	auto WriteToConfig = [this](UGeneratorStackConfig* Config)
+	{
+		Config->Modify();
+		Config->GeneratorsJson        = SerializeStackToJson(GeneratorItems);
+		Config->bLetBatchProcessorFill = bLetBatchProcessorFill;
+		Config->MarkPackageDirty();
+
+		UPackage* Package = Config->GetOutermost();
+		FString PackageFilename = FPackageName::LongPackageNameToFilename(
+			Package->GetName(), FPackageName::GetAssetPackageExtension());
+
+		FSavePackageArgs SaveArgs;
+		SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+		UPackage::SavePackage(Package, Config, *PackageFilename, SaveArgs);
+	};
+
+	if (LoadedConfigAsset.IsValid())
+	{
+		WriteToConfig(LoadedConfigAsset.Get());
+
+		FNotificationInfo Info(LOCTEXT("SaveConfigAssetDone", "Generator stack config saved"));
+		Info.ExpireDuration = 3.f;
+		FSlateNotificationManager::Get().AddNotification(Info);
+	}
+	else
+	{
+		UGeneratorStackConfigFactory* Factory = NewObject<UGeneratorStackConfigFactory>();
+		UObject* NewObj = AssetTools.CreateAssetWithDialog(
+			TEXT("GeneratorStackConfig"), TEXT("/Game"),
+			UGeneratorStackConfig::StaticClass(), Factory);
+
+		if (UGeneratorStackConfig* NewConfig = Cast<UGeneratorStackConfig>(NewObj))
+		{
+			WriteToConfig(NewConfig);
+			LoadedConfigAsset = NewConfig;
+
+			FNotificationInfo Info(LOCTEXT("CreateConfigAssetDone", "Generator stack config created and saved"));
+			Info.ExpireDuration = 3.f;
+			FSlateNotificationManager::Get().AddNotification(Info);
+		}
+	}
+
+	return FReply::Handled();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Batch processor fill toggle
+// ─────────────────────────────────────────────────────────────────────────────
+
+ECheckBoxState SGeneratorEditorWindow::GetBatchProcessorFillState() const
+{
+	return bLetBatchProcessorFill ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+}
+
+void SGeneratorEditorWindow::OnBatchProcessorFillChanged(ECheckBoxState NewState)
+{
+	bLetBatchProcessorFill = (NewState == ECheckBoxState::Checked);
+	if (DetailsView.IsValid())
+	{
+		DetailsView->ForceRefresh();
+	}
+}
+
+bool SGeneratorEditorWindow::IsRefSlotEnabled() const
+{
+	return !bLetBatchProcessorFill;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

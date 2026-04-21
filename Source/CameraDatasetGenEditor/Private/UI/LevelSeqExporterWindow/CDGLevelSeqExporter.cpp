@@ -1,6 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "UI/LevelSeqExporterWindow/CDGLevelSeqExporter.h"
+#include "Config/LevelSeqExportConfig.h"
+#include "Config/LevelSeqExportConfigFactory.h"
 #include "Trajectory/CDGKeyframe.h"
 #include "Anchor/CDGCharacterAnchor.h"
 #include "LevelSequenceInterface/CDGLevelSeqSubsystem.h"
@@ -283,6 +285,52 @@ void SLevelSeqExporterWindow::Construct(const FArguments& InArgs, const TArray<A
             .Padding(0, 8, 0, 0)
             [
                 SNew(SScrollBox)
+
+                // ---- Config Save / Load ----
+                + SScrollBox::Slot()
+                .Padding(0, 4, 0, 0)
+                [
+                    SNew(SHorizontalBox)
+                    + SHorizontalBox::Slot()
+                    .AutoWidth()
+                    .Padding(0, 0, 10, 0)
+                    .VAlign(VAlign_Center)
+                    [
+                        SNew(STextBlock)
+                        .Text(LOCTEXT("ConfigAssetLabel", "Config Asset:"))
+                        .MinDesiredWidth(130.0f)
+                    ]
+                    + SHorizontalBox::Slot()
+                    .FillWidth(1.0f)
+                    .Padding(0, 0, 5, 0)
+                    [
+                        SNew(SObjectPropertyEntryBox)
+                        .AllowedClass(ULevelSeqExportConfig::StaticClass())
+                        .ObjectPath(this, &SLevelSeqExporterWindow::GetLoadedConfigPath)
+                        .OnObjectChanged(this, &SLevelSeqExporterWindow::OnLoadConfigChanged)
+                        .AllowClear(true)
+                        .DisplayUseSelected(true)
+                        .DisplayBrowse(true)
+                        .ToolTipText(LOCTEXT("ConfigAssetTooltip", "Select a saved export config to load its settings, or leave empty to use current values"))
+                    ]
+                    + SHorizontalBox::Slot()
+                    .AutoWidth()
+                    [
+                        SNew(SButton)
+                        .Text(LOCTEXT("SaveConfigButton", "Save Config"))
+                        .OnClicked(this, &SLevelSeqExporterWindow::OnSaveConfigClicked)
+                        .ToolTipText(LOCTEXT("SaveConfigTooltip", "Save current settings to the selected config asset, or create a new one"))
+                    ]
+                ]
+
+                // ---- Separator ----
+                + SScrollBox::Slot()
+                .Padding(0, 8)
+                [
+                    SNew(SBorder)
+                    .BorderImage(FAppStyle::GetBrush("Menu.Separator"))
+                    .Padding(FMargin(0, 2))
+                ]
 
                 // ---- Export Settings ----
                 + SScrollBox::Slot()
@@ -1495,6 +1543,129 @@ ULevelSequence* SLevelSeqExporterWindow::PerformExport()
 }
 
 // ---------------------------------------------------------------------------
+// Config save / load
+// ---------------------------------------------------------------------------
+
+void SLevelSeqExporterWindow::OnLoadConfigChanged(const FAssetData& AssetData)
+{
+    LoadedConfig = Cast<ULevelSeqExportConfig>(AssetData.GetAsset());
+    if (LoadedConfig.IsValid())
+    {
+        ApplyConfigToUI(LoadedConfig.Get());
+    }
+}
+
+FString SLevelSeqExporterWindow::GetLoadedConfigPath() const
+{
+    return LoadedConfig.IsValid() ? LoadedConfig->GetPathName() : FString();
+}
+
+FReply SLevelSeqExporterWindow::OnSaveConfigClicked()
+{
+    IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
+
+    if (LoadedConfig.IsValid())
+    {
+        // Update the already-loaded config in-place and write it to disk
+        PopulateConfigFromUI(LoadedConfig.Get());
+        LoadedConfig->MarkPackageDirty();
+
+        UPackage* Package = LoadedConfig->GetOutermost();
+        FString PackageFilename = FPackageName::LongPackageNameToFilename(
+            Package->GetName(), FPackageName::GetAssetPackageExtension());
+
+        FSavePackageArgs SaveArgs;
+        SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+        UPackage::SavePackage(Package, LoadedConfig.Get(), *PackageFilename, SaveArgs);
+
+        FNotificationInfo Info(LOCTEXT("ConfigSaved", "Export config saved"));
+        Info.ExpireDuration = 3.0f;
+        FSlateNotificationManager::Get().AddNotification(Info);
+    }
+    else
+    {
+        // No config loaded — create a new asset via the standard content browser dialog
+        ULevelSeqExportConfigFactory* Factory = NewObject<ULevelSeqExportConfigFactory>();
+        UObject* NewAssetObj = AssetTools.CreateAssetWithDialog(
+            TEXT("LevelSeqExportConfig"), TEXT("/Game"),
+            ULevelSeqExportConfig::StaticClass(), Factory);
+
+        if (ULevelSeqExportConfig* NewConfig = Cast<ULevelSeqExportConfig>(NewAssetObj))
+        {
+            PopulateConfigFromUI(NewConfig);
+            NewConfig->MarkPackageDirty();
+
+            UPackage* Package = NewConfig->GetOutermost();
+            FString PackageFilename = FPackageName::LongPackageNameToFilename(
+                Package->GetName(), FPackageName::GetAssetPackageExtension());
+
+            FSavePackageArgs SaveArgs;
+            SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+            UPackage::SavePackage(Package, NewConfig, *PackageFilename, SaveArgs);
+
+            LoadedConfig = NewConfig;
+
+            FNotificationInfo Info(LOCTEXT("ConfigCreated", "Export config created and saved"));
+            Info.ExpireDuration = 3.0f;
+            FSlateNotificationManager::Get().AddNotification(Info);
+        }
+    }
+
+    return FReply::Handled();
+}
+
+void SLevelSeqExporterWindow::ApplyConfigToUI(const ULevelSeqExportConfig* Config)
+{
+    if (!Config) return;
+
+    FPSInput->SetValue(Config->FPS);
+    ClearSequenceCheckBox->SetIsChecked(Config->bClearLevelSequence ? ECheckBoxState::Checked : ECheckBoxState::Unchecked);
+
+    OutputDirTextBox->SetText(FText::FromString(Config->OutputDirectory));
+    ResolutionWidthInput->SetValue(Config->ResolutionWidth);
+    ResolutionHeightInput->SetValue(Config->ResolutionHeight);
+
+    for (const TSharedPtr<ECDGRenderOutputFormat>& Option : OutputFormatOptions)
+    {
+        if (Option.IsValid() && *Option == Config->ExportFormat)
+        {
+            SelectedOutputFormat = Option;
+            OutputFormatComboBox->SetSelectedItem(Option);
+            break;
+        }
+    }
+
+    ExportIndexJSONCheckBox->SetIsChecked(Config->bExportIndexJSON ? ECheckBoxState::Checked : ECheckBoxState::Unchecked);
+    OverwriteExistingCheckBox->SetIsChecked(Config->bOverwriteExisting ? ECheckBoxState::Checked : ECheckBoxState::Unchecked);
+
+    SpatialSampleCountInput->SetValue(Config->SpatialSampleCount);
+    TemporalSampleCountInput->SetValue(Config->TemporalSampleCount);
+
+    KeepExportedSequenceCheckBox->SetIsChecked(Config->bKeepExportedLevelSequence ? ECheckBoxState::Checked : ECheckBoxState::Unchecked);
+}
+
+void SLevelSeqExporterWindow::PopulateConfigFromUI(ULevelSeqExportConfig* Config) const
+{
+    if (!Config) return;
+
+    Config->Modify();
+    Config->FPS               = FPSInput->GetValue();
+    Config->bClearLevelSequence = ClearSequenceCheckBox->IsChecked();
+
+    Config->OutputDirectory   = OutputDirTextBox->GetText().ToString();
+    Config->ResolutionWidth   = ResolutionWidthInput->GetValue();
+    Config->ResolutionHeight  = ResolutionHeightInput->GetValue();
+    Config->ExportFormat      = SelectedOutputFormat.IsValid() ? *SelectedOutputFormat : ECDGRenderOutputFormat::PNG_Sequence;
+    Config->bExportIndexJSON  = ExportIndexJSONCheckBox->IsChecked();
+    Config->bOverwriteExisting = OverwriteExistingCheckBox->IsChecked();
+
+    Config->SpatialSampleCount  = SpatialSampleCountInput->GetValue();
+    Config->TemporalSampleCount = TemporalSampleCountInput->GetValue();
+
+    Config->bKeepExportedLevelSequence = KeepExportedSequenceCheckBox->IsChecked();
+}
+
+// ---------------------------------------------------------------------------
 // Button handlers
 // ---------------------------------------------------------------------------
 
@@ -1504,16 +1675,6 @@ FReply SLevelSeqExporterWindow::OnCancelClicked()
     if (Window.IsValid())
     {
         Window->RequestDestroyWindow();
-    }
-    return FReply::Handled();
-}
-
-FReply SLevelSeqExporterWindow::OnExportClicked()
-{
-    ULevelSequence* MasterSequence = PerformExport();
-    if (MasterSequence)
-    {
-        OnCancelClicked();
     }
     return FReply::Handled();
 }
@@ -1606,56 +1767,6 @@ FReply SLevelSeqExporterWindow::OnBrowseOutputDirClicked()
     {
         OutputDirTextBox->SetText(FText::FromString(SelectedFolder));
     }
-
-    return FReply::Handled();
-}
-
-FReply SLevelSeqExporterWindow::OnExportJSONClicked()
-{
-    const int32 FPS = FPSInput->GetValue();
-
-    IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get();
-    if (!DesktopPlatform)
-    {
-        UE_LOG(LogCameraDatasetGenEditor, Error, TEXT("Failed to get Desktop Platform module"));
-        return FReply::Handled();
-    }
-
-    TSharedPtr<SWindow> ParentWindow = FSlateApplication::Get().FindWidgetWindow(AsShared());
-    void* ParentWindowHandle = (ParentWindow.IsValid() && ParentWindow->GetNativeWindow().IsValid())
-        ? ParentWindow->GetNativeWindow()->GetOSWindowHandle()
-        : nullptr;
-
-    FString DefaultFileName = TEXT("Trajectories.json");
-    if (UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr)
-    {
-        FString LevelName = World->GetMapName();
-        LevelName.RemoveFromStart(World->StreamingLevelsPrefix);
-        DefaultFileName = FString::Printf(TEXT("%s_Trajectories.json"), *LevelName);
-    }
-
-    FString DefaultPath = FPaths::ProjectSavedDir() / TEXT("Trajectories");
-    TArray<FString> OutFiles;
-    bool bFileSelected = DesktopPlatform->SaveFileDialog(
-        ParentWindowHandle,
-        TEXT("Save Trajectories as JSON"),
-        DefaultPath, DefaultFileName,
-        TEXT("JSON Files (*.json)|*.json|All Files (*.*)|*.*"),
-        EFileDialogFlags::None,
-        OutFiles);
-
-    if (!bFileSelected || OutFiles.Num() == 0) return FReply::Handled();
-
-    FString FilePath = OutFiles[0];
-    bool bSuccess = TrajectorySL::SaveAllTrajectories(FilePath, FPS, true);
-
-    FNotificationInfo Info(bSuccess
-        ? FText::Format(LOCTEXT("ExportJSONSuccess", "Trajectories exported to:\n{0}"), FText::FromString(FilePath))
-        : LOCTEXT("ExportJSONFailed", "Failed to export trajectories to JSON"));
-    Info.ExpireDuration = 5.0f;
-    Info.bUseLargeFont  = false;
-    Info.bUseSuccessFailIcons = true;
-    FSlateNotificationManager::Get().AddNotification(Info);
 
     return FReply::Handled();
 }

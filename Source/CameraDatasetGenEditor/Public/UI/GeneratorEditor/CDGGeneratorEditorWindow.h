@@ -9,6 +9,7 @@
 
 class UCDGTrajectoryGenerator;
 class ULevelSequence;
+class UGeneratorStackConfig;
 class IDetailsView;
 struct FAssetData;
 
@@ -96,6 +97,18 @@ private:
 	void OnReferenceSequenceSelected(const FAssetData& AssetData);
 	FString GetReferenceSequencePath() const;
 
+	// ── Config asset save / load ─────────────────────────────────────────────
+
+	FReply OnSaveConfigAssetClicked();
+	void OnLoadConfigAssetChanged(const FAssetData& AssetData);
+	FString GetConfigAssetPath() const;
+
+	// ── Batch processor fill toggle ──────────────────────────────────────────
+
+	ECheckBoxState GetBatchProcessorFillState() const;
+	void OnBatchProcessorFillChanged(ECheckBoxState NewState);
+	bool IsRefSlotEnabled() const;
+
 	// ── Action buttons ───────────────────────────────────────────────────────
 
 	FReply OnGenerateClicked();
@@ -124,6 +137,12 @@ private:
 	TSharedPtr<FGeneratorClassEntry>                         SelectedAddClass;
 
 	TWeakObjectPtr<ULevelSequence>                           SharedReferenceSequence;
+
+	// Currently loaded generator stack config asset (used for save-in-place)
+	TWeakObjectPtr<UGeneratorStackConfig>                   LoadedConfigAsset;
+
+	// Whether the batch processor should fill reference sequence and actor slots
+	bool                                                    bLetBatchProcessorFill = false;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
