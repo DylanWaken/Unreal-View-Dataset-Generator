@@ -11,8 +11,35 @@ class UGeneratorStackConfig;
 class ULevelSeqExportConfig;
 class ULevelSequence;
 class UCDGTrajectoryGenerator;
+class UCDGPositioningGenerator;
+class UCDGMovementGenerator;
+class UCDGEffectsGenerator;
 class ACDGLevelSceneAnchor;
 class ACDGTrajectory;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FBatchDetailedProgress  —  per-dimension counters broadcast each combo step
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct FBatchDetailedProgress
+{
+	int32 LevelCurrent     = 0;  int32 LevelTotal     = 0;
+	int32 AnchorCurrent    = 0;  int32 AnchorTotal    = 0;
+	int32 CharacterCurrent = 0;  int32 CharacterTotal = 0;
+	int32 AnimCurrent      = 0;  int32 AnimTotal      = 0;
+	/** Per-combo: shots rendered so far (0 or N) vs N trajectories this combo. */
+	int32 ShotCurrent      = 0;  int32 ShotTotal      = 0;
+	/** Overall completed/total combo count. */
+	int32 ComboCurrent     = 0;  int32 ComboTotal     = 0;
+	/**
+	 * Cumulative shot counters across the whole batch.
+	 * GlobalShotsTotal grows each time a new combo generates trajectories.
+	 * GlobalShotsRendered grows each time an MRQ render completes.
+	 * These drive the main progress bar.
+	 */
+	int32 GlobalShotsRendered = 0;
+	int32 GlobalShotsTotal    = 0;
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // FBatchProcInput  —  everything the batch processor needs to run
@@ -102,6 +129,14 @@ public:
 	DECLARE_MULTICAST_DELEGATE_OneParam(FOnBatchCompleted, bool /*bSuccess*/);
 	FOnBatchCompleted OnBatchCompleted;
 
+	/**
+	 * Fired at the start of each combo execution and again after shot generation.
+	 * Carries per-dimension counters so the UI can show
+	 *   [Level x/N] – [Anchor x/N] – [Character x/N] – [Anim x/N] – [Shot x/N]
+	 */
+	DECLARE_MULTICAST_DELEGATE_OneParam(FOnDetailedProgressUpdated, const FBatchDetailedProgress&);
+	FOnDetailedProgressUpdated OnDetailedProgressUpdated;
+
 private:
 	// ── Input / state ────────────────────────────────────────────────────────
 
@@ -125,11 +160,18 @@ private:
 	TArray<FString>                CreatedShotSequencePaths; // collected during export, deleted afterwards
 
 	// Generator instances re-created for each level (world must be the outer)
-	TArray<TObjectPtr<UCDGTrajectoryGenerator>> Generators;
+	// Separated by pipeline stage: Positioning → Movement → Effects
+	TArray<TObjectPtr<UCDGPositioningGenerator>> PositioningGenerators;
+	TArray<TObjectPtr<UCDGMovementGenerator>>    MovementGenerators;
+	TArray<TObjectPtr<UCDGEffectsGenerator>>     EffectsGenerators;
 
 	// Progress tracking
-	int32 TotalCombos     = 0;
-	int32 CompletedCombos = 0;
+	int32 TotalCombos        = 0;
+	int32 CompletedCombos    = 0;
+	/** Cumulative shots discovered (grows after each RunGenerators call). */
+	int32 TotalShotsKnown    = 0;
+	/** Cumulative shots whose MRQ render has completed. */
+	int32 TotalShotsRendered = 0;
 
 	// ── Top-level step machine ───────────────────────────────────────────────
 
@@ -218,5 +260,6 @@ private:
 	int32 ComputeTotalCombos() const;
 
 	void BroadcastLog(const FString& Msg);
+	void BroadcastDetailedProgress(int32 ShotCurrent, int32 ShotTotal);
 	void Finish(bool bSuccess);
 };

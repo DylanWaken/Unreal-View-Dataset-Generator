@@ -53,15 +53,15 @@ TSharedRef<SWidget> FTopButtonDropdown::MakeDropdownMenu()
 		FUIAction(FExecuteAction::CreateStatic(&FTopButtonDropdown::OnDeleteLevelSequence))
 	);
 
+	MenuBuilder.AddMenuSeparator();
+
 	// Add "Export & Render" menu entry (merged export + MRQ render window)
 	MenuBuilder.AddMenuEntry(
 		LOCTEXT("ExportToLevelSequence_Label", "Export & Render"),
 		LOCTEXT("ExportToLevelSequence_Tooltip", "Export trajectories to Level Sequence and optionally render via Movie Render Queue"),
-		FSlateIcon(FAppStyle::GetAppStyleSetName(), "Icons.Cinematics"),
+		FSlateIcon(FAppStyle::GetAppStyleSetName(), "PlacementBrowser.Icons.Cinematics"),
 		FUIAction(FExecuteAction::CreateStatic(&FTopButtonDropdown::OnExportToLevelSequence))
 	);
-
-	MenuBuilder.AddMenuSeparator();
 
 	// Add "Generator Editor" menu entry
 	MenuBuilder.AddMenuEntry(

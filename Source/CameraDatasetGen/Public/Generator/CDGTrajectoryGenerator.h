@@ -4,12 +4,60 @@
 
 #include "CoreMinimal.h"
 #include "UObject/Object.h"
-#include "Anchor/CDGCharacterAnchor.h"
 #include "CDGTrajectoryGenerator.generated.h"
 
 class ULevelSequence;
 class ACDGTrajectory;
 class FJsonObject;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EGeneratorStage — identifies which pipeline stage a generator belongs to
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The three stages of the camera generation pipeline:
+ *
+ *   POSITIONING  →  MOVEMENT  →  EFFECTS
+ *
+ * POSITIONING generators sample initial camera placements (world position,
+ * trajectory name) without creating any world actors.
+ *
+ * MOVEMENT generators receive those placements together with anchor / sequence
+ * context and produce fully-keyed ACDGTrajectory actors.
+ *
+ * EFFECTS generators post-process completed trajectories (e.g. depth of field,
+ * lens simulation, camera rigs) without changing the keyframe count.
+ */
+UENUM(BlueprintType)
+enum class EGeneratorStage : uint8
+{
+	Positioning UMETA(DisplayName = "Positioning"),
+	Movement    UMETA(DisplayName = "Movement"),
+	Effects     UMETA(DisplayName = "Effects"),
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FCDGCameraPlacement — output record of the Positioning stage
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Lightweight descriptor produced by a UCDGPositioningGenerator.
+ * Carries the world-space position and the unique trajectory name that the
+ * downstream UCDGMovementGenerator should use when spawning keyframes.
+ */
+USTRUCT(BlueprintType)
+struct CAMERADATASETGEN_API FCDGCameraPlacement
+{
+	GENERATED_BODY()
+
+	/** Unique name for the trajectory this placement will become. */
+	UPROPERTY(BlueprintReadWrite, Category = "Generator")
+	FName TrajectoryName;
+
+	/** Proposed initial world-space camera position. */
+	UPROPERTY(BlueprintReadWrite, Category = "Generator")
+	FVector Position = FVector::ZeroVector;
+};
 
 /**
  * UCDGTrajectoryGenerator
@@ -26,7 +74,7 @@ class FJsonObject;
  *
  * Lifecycle:
  *   1. Create an instance with a world-context outer (e.g. an actor or subsystem).
- *   2. Set ReferenceSequence, PrimaryCharacterActor, and FocusedAnchor.
+ *   2. Set ReferenceSequence (and PrimaryCharacterActor / FocusedAnchor on positioning-based generators).
  *   3. Call Generate(). The default implementation is a no-op.
  *   4. Optionally use SerializeGeneratorConfig / FetchGeneratorConfig for preset IO.
  */
@@ -48,14 +96,6 @@ public:
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Generator")
 	TObjectPtr<ULevelSequence> ReferenceSequence;
-
-	/** Primary character actor that exists in the same level referenced by the sequence */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Generator")
-	TObjectPtr<AActor> PrimaryCharacterActor;
-
-	/** Anchor point on the primary character that the generated camera should orient toward */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Generator")
-	AnchorType FocusedAnchor = AnchorType::CDG_ANCHOR_HEAD;
 
 	// ==================== GENERATION ====================
 
@@ -96,6 +136,16 @@ public:
 	virtual void FetchGeneratorConfig(const TSharedPtr<FJsonObject>& InJson);
 
 	// ==================== IDENTITY ====================
+
+	/**
+	 * Returns which pipeline stage this generator belongs to.
+	 * Base implementation returns EGeneratorStage::Positioning.
+	 * Each abstract stage base class (UCDGPositioningGenerator etc.) overrides
+	 * this to return its fixed stage; concrete subclasses inherit that override.
+	 */
+	UFUNCTION(BlueprintCallable, BlueprintNativeEvent, Category = "Generator")
+	EGeneratorStage GetGeneratorStage() const;
+	virtual EGeneratorStage GetGeneratorStage_Implementation() const;
 
 	/**
 	 * Returns a stable machine-readable name that uniquely identifies this generator type.

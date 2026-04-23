@@ -135,8 +135,18 @@ namespace CDGMRQInterface
 	 */
 	CAMERADATASETGENEDITOR_API bool RenderTrajectoriesWithSequence(ULevelSequence* MasterSequence, const TArray<ACDGTrajectory*>& Trajectories, const FTrajectoryRenderConfig& Config);
 
-	/** Overload that fires OnCompleted(bSuccess) after the render executor finishes */
-	CAMERADATASETGENEDITOR_API bool RenderTrajectoriesWithSequence(ULevelSequence* MasterSequence, const TArray<ACDGTrajectory*>& Trajectories, const FTrajectoryRenderConfig& Config, TFunction<void(bool)> OnCompleted);
+	/**
+	 * Overload that fires:
+	 *   OnShotRendered()  – once each time a single MRQ job (shot) finishes
+	 *   OnCompleted(bool) – once when the entire executor finishes
+	 * Pass nullptr for either callback you don't need.
+	 */
+	CAMERADATASETGENEDITOR_API bool RenderTrajectoriesWithSequence(
+		ULevelSequence* MasterSequence,
+		const TArray<ACDGTrajectory*>& Trajectories,
+		const FTrajectoryRenderConfig& Config,
+		TFunction<void(bool)>  OnCompleted,
+		TFunction<void()>      OnShotRendered = nullptr);
 
 	// Helper functions
 	namespace Internal

@@ -2,6 +2,7 @@
 
 #include "UI/BatchProcEditor/CDGBatchProcEditorWindow.h"
 #include "UI/BatchProcEditor/CDGBatchProcExecService.h"
+#include "UI/BatchProcEditor/CDGBatchProgressWindow.h"
 #include "Config/BatchProcConfig.h"
 #include "Config/BatchProcConfigFactory.h"
 #include "Config/GeneratorStackConfig.h"
@@ -18,9 +19,12 @@
 #include "Engine/SimpleConstructionScript.h"
 #include "Engine/SCS_Node.h"
 
-// Anchor check
+// Anchor / trajectory cleanup
 #include "Anchor/CDGLevelSceneAnchor.h"
 #include "Anchor/CDGCharacterAnchor.h"
+#include "Trajectory/CDGKeyframe.h"
+#include "Trajectory/CDGTrajectorySubsystem.h"
+#include "CineCameraActor.h"
 #include "EngineUtils.h"
 #include "Editor.h"
 #include "Engine/Engine.h"
@@ -606,17 +610,6 @@ void SBatchProcEditorWindow::Construct(const FArguments& InArgs)
 
 				+ SHorizontalBox::Slot()
 				.AutoWidth()
-				.Padding(0.f, 0.f, 8.f, 0.f)
-				[
-					SNew(SButton)
-					.Text(LOCTEXT("CancelBatchBtn", "Cancel"))
-					.ToolTipText(LOCTEXT("CancelBatchTip", "Request cancellation of the running batch process."))
-					.OnClicked(this, &SBatchProcEditorWindow::OnCancelBatchProcClicked)
-					.IsEnabled_Lambda([this]() { return ActiveBatchService && ActiveBatchService->IsRunning(); })
-				]
-
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
 				[
 					SNew(SButton)
 					.Text_Lambda([this]()
@@ -1022,30 +1015,55 @@ FReply SBatchProcEditorWindow::OnStartBatchProcClicked()
 	// ── Create and start service ─────────────────────────────────────────────
 	BatchProgress      = 0;
 	BatchProgressTotal = 0;
-	BatchLog.Empty();
 
 	ActiveBatchService = UCDGBatchProcExecService::Create(GetTransientPackage(), Input);
 	ActiveBatchService->AddToRoot(); // prevent GC while running
 
+	// ── Open the floating progress window ────────────────────────────────────
+	ProgressWidget = SNew(SBatchProgressWindow)
+		.OnCancelRequested(FSimpleDelegate::CreateSP(
+			this, &SBatchProcEditorWindow::OnCancelBatchProcClicked_Internal));
+
+	TSharedPtr<SWindow> ParentWin;
+	{
+		IMainFrameModule* MF = FModuleManager::GetModulePtr<IMainFrameModule>("MainFrame");
+		if (MF) ParentWin = MF->GetParentWindow();
+	}
+	ProgressWidget->OpenWindow(ParentWin);
+
+	// ── Wire delegates ────────────────────────────────────────────────────────
 	ActiveBatchService->OnProgressUpdated.AddLambda(
 		[this](int32 Completed, int32 Total)
 		{
 			BatchProgress      = Completed;
 			BatchProgressTotal = Total;
+			if (ProgressWidget.IsValid())
+				ProgressWidget->UpdateProgress(Completed, Total);
+		});
+
+	ActiveBatchService->OnDetailedProgressUpdated.AddLambda(
+		[this](const FBatchDetailedProgress& Progress)
+		{
+			BatchProgress      = Progress.ComboCurrent;
+			BatchProgressTotal = Progress.ComboTotal;
+			if (ProgressWidget.IsValid())
+				ProgressWidget->UpdateDetailedProgress(Progress);
 		});
 
 	ActiveBatchService->OnLogMessage.AddLambda(
 		[this](const FString& Msg)
 		{
-			BatchLog.Add(Msg);
-			// Keep the last 200 lines to avoid unbounded growth
-			if (BatchLog.Num() > 200) BatchLog.RemoveAt(0, BatchLog.Num() - 200);
+			if (ProgressWidget.IsValid())
+				ProgressWidget->AddLog(Msg);
 		});
 
 	ActiveBatchService->OnBatchCompleted.AddLambda(
 		[this](bool bSuccess)
 		{
 			if (ActiveBatchService) ActiveBatchService->RemoveFromRoot();
+			if (ProgressWidget.IsValid())
+				ProgressWidget->MarkCompleted(bSuccess);
+			// Window stays open so user can read the final status; they close via "Close".
 		});
 
 	ActiveBatchService->Start();
@@ -1057,12 +1075,38 @@ FReply SBatchProcEditorWindow::OnStartBatchProcClicked()
 	return FReply::Handled();
 }
 
+void SBatchProcEditorWindow::OnCancelBatchProcClicked_Internal()
+{
+	if (!ActiveBatchService || !ActiveBatchService->IsRunning())
+		return;
+
+	ActiveBatchService->Cancel();
+
+	// Immediately clean up whatever CDG actors are in the current world so the
+	// level is left in a tidy state rather than filled with stale trajectories.
+	UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+	if (World)
+	{
+		UCDGTrajectorySubsystem* TrajSys = World->GetSubsystem<UCDGTrajectorySubsystem>();
+		if (TrajSys)
+		{
+			for (const FName& Name : TrajSys->GetTrajectoryNames())
+				TrajSys->DeleteTrajectory(Name);
+		}
+
+		TArray<ACDGKeyframe*> OrphanKFs;
+		for (TActorIterator<ACDGKeyframe> It(World); It; ++It) OrphanKFs.Add(*It);
+		for (ACDGKeyframe* KF : OrphanKFs) World->EditorDestroyActor(KF, true);
+
+		TArray<ACineCameraActor*> OrphanCams;
+		for (TActorIterator<ACineCameraActor> It(World); It; ++It) OrphanCams.Add(*It);
+		for (ACineCameraActor* Cam : OrphanCams) World->EditorDestroyActor(Cam, true);
+	}
+}
+
 FReply SBatchProcEditorWindow::OnCancelBatchProcClicked()
 {
-	if (ActiveBatchService && ActiveBatchService->IsRunning())
-	{
-		ActiveBatchService->Cancel();
-	}
+	OnCancelBatchProcClicked_Internal();
 	return FReply::Handled();
 }
 

@@ -60,6 +60,15 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "CDG|LevelSequence")
 	FString GetSequencePackageName() const;
 
+	/**
+	 * Clear the cached active sequence pointer without touching the asset on disk.
+	 * Call this after manually deleting the underlying package so that the next
+	 * InitLevelSequence() creates a fresh asset rather than scanning for the
+	 * now-deleted one.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "CDG|LevelSequence")
+	void ResetActiveSequence() { ActiveLevelSequence = nullptr; }
+
 protected:
 	// ==================== INTERNAL ====================
 

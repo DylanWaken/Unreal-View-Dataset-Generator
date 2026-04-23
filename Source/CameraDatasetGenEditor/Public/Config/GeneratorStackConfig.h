@@ -6,11 +6,14 @@
 #include "GeneratorStackConfig.generated.h"
 
 /**
- * Content-browser asset that persists a generator stack configuration.
+ * Content-browser asset that persists a generator pipeline configuration.
  *
- * GeneratorsJson holds the same JSON format produced by OnExportConfigClicked
- * (array of { "class": "...", "config": { ... } } objects), so the existing
- * SerializeGeneratorConfig / FetchGeneratorConfig API is reused directly.
+ * GeneratorsJson holds the three-stage pipeline in JSON format:
+ * {
+ *   "positioning": [ { "class": "...", "config": {...} }, ... ],
+ *   "movement":    [ { "class": "...", "config": {...} }, ... ],
+ *   "effects":     [ { "class": "...", "config": {...} }, ... ]
+ * }
  *
  * bLetBatchProcessorFill is stored alongside so the full UI state can be
  * round-tripped through a single asset.

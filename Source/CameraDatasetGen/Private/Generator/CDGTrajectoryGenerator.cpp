@@ -6,6 +6,11 @@
 #include "Dom/JsonObject.h"
 #include "LogCameraDatasetGen.h"
 
+EGeneratorStage UCDGTrajectoryGenerator::GetGeneratorStage_Implementation() const
+{
+	return EGeneratorStage::Positioning;
+}
+
 FName UCDGTrajectoryGenerator::GetGeneratorName_Implementation() const
 {
 	return NAME_None;

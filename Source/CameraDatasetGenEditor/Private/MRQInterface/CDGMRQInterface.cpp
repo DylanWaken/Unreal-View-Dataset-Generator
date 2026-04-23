@@ -4,6 +4,7 @@
 #include "Trajectory/CDGTrajectory.h"
 #include "Trajectory/CDGKeyframe.h"
 #include "Trajectory/CDGTrajectorySubsystem.h"
+#include "Anchor/CDGCharacterAnchor.h"
 #include "IO/TrajectorySL.h"
 #include "LogCameraDatasetGenEditor.h"
 #include "LevelSequenceInterface/CDGLevelSeqSubsystem.h"
@@ -99,7 +100,7 @@ namespace CDGMRQInterface
 		return RenderTrajectories(Trajectories, Config);
 	}
 
-	bool RenderTrajectoriesWithSequence(ULevelSequence* MasterSequence, const TArray<ACDGTrajectory*>& Trajectories, const FTrajectoryRenderConfig& Config, TFunction<void(bool)> OnCompleted)
+	bool RenderTrajectoriesWithSequence(ULevelSequence* MasterSequence, const TArray<ACDGTrajectory*>& Trajectories, const FTrajectoryRenderConfig& Config, TFunction<void(bool)> OnCompleted, TFunction<void()> OnShotRendered)
 	{
 		// Delegate to the base implementation but intercept the executor's finish event.
 		// We duplicate the executor-binding logic here so that OnCompleted fires after the
@@ -107,7 +108,7 @@ namespace CDGMRQInterface
 		// The simplest way is to wrap it: call the base overload on a separate path, but that
 		// would double-bind OnExecutorFinished.  Instead we just implement the full body here
 		// and call the base variant only when no callback is supplied.
-		if (!OnCompleted)
+		if (!OnCompleted && !OnShotRendered)
 		{
 			return RenderTrajectoriesWithSequence(MasterSequence, Trajectories, Config);
 		}
@@ -239,6 +240,18 @@ namespace CDGMRQInterface
 		if (Executor)
 		{
 			const TWeakObjectPtr<UCDGTrajectorySubsystem> WeakTrajectorySubsystem = TrajectorySubsystem;
+
+			// Per-shot callback: fires each time one MRQ job (one shot) completes.
+			// OnIndividualJobWorkFinished() is the non-deprecated per-job delegate
+			// on UMoviePipelinePIEExecutor; it receives FMoviePipelineOutputData.
+			if (OnShotRendered)
+			{
+				Executor->OnIndividualJobWorkFinished().AddLambda(
+					[OnShotRendered](FMoviePipelineOutputData /*Data*/)
+					{
+						OnShotRendered();
+					});
+			}
 
 			Executor->OnExecutorFinished().AddLambda([LevelOutputDir, Config, bRestoreVisualizersAfterRender, WeakTrajectorySubsystem, OnCompleted = MoveTemp(OnCompleted)](UMoviePipelineExecutorBase* InExecutor, bool bSuccess)
 			{
@@ -904,12 +917,7 @@ namespace CDGMRQInterface
 				}
 				OutSequence->BindPossessableObject(ComponentGuid, *CameraComponent, CameraActor);
 
-				TArray<ACDGKeyframe*> TrajectoryKeyframes = Trajectory->GetSortedKeyframes();
-				const bool bAnyManualFocus = TrajectoryKeyframes.ContainsByPredicate([](const ACDGKeyframe* Keyframe)
-				{
-					return Keyframe && Keyframe->LensSettings.bUseManualFocusDistance;
-				});
-				CameraComponent->FocusSettings.FocusMethod = bAnyManualFocus ? ECameraFocusMethod::Manual : ECameraFocusMethod::Disable;
+			TArray<ACDGKeyframe*> TrajectoryKeyframes = Trajectory->GetSortedKeyframes();
 
 				auto AddLensKeyWithStay = [&](FMovieSceneFloatChannel& Channel, double& CurrentTimeSeconds, const ACDGKeyframe* Keyframe, float Value)
 				{
@@ -965,28 +973,75 @@ namespace CDGMRQInterface
 					}
 				}
 
-				if (UMovieSceneFloatTrack* ManualFocusTrack = MovieScene->AddTrack<UMovieSceneFloatTrack>(ComponentGuid))
+				// ---- Focus setup ----
+				// If the first keyframe has an autofocus actor, use UE's native Tracking
+				// focus mode — UCineCameraComponent::GetDesiredFocusDistance() then
+				// projects the tracked world point onto the camera's optical axis every
+				// frame, so focus remains correct even as the character moves.
+				// Otherwise fall back to a baked ManualFocusDistance track.
+				const ACDGKeyframe* FirstKF = TrajectoryKeyframes.Num() > 0 ? TrajectoryKeyframes[0] : nullptr;
+				AActor* AutofocusActor = FirstKF ? FirstKF->LensSettings.AutofocusTargetActor.Get() : nullptr;
+
+				if (AutofocusActor)
 				{
-					ManualFocusTrack->SetPropertyNameAndPath(TEXT("FocusSettings.ManualFocusDistance"), TEXT("FocusSettings.ManualFocusDistance"));
-					UMovieSceneFloatSection* ManualFocusSection = Cast<UMovieSceneFloatSection>(ManualFocusTrack->CreateNewSection());
-					ManualFocusTrack->AddSection(*ManualFocusSection);
-					ManualFocusSection->SetRange(TRange<FFrameNumber>(0, DurationInTicks));
-
-					FMovieSceneFloatChannel& ManualFocusChannel = ManualFocusSection->GetChannel();
-					double CurrentTimeSeconds = 0.0;
-					for (int32 k = 0; k < TrajectoryKeyframes.Num(); ++k)
+					// Compute the anchor's position in the actor's local space.
+					// UCineCameraComponent::GetDesiredFocusDistance does:
+					//   FocusPoint = TrackedActor->GetActorTransform().TransformPosition(RelativeOffset)
+					// so RelativeOffset must be in actor-local space.
+					FVector AnchorLocalOffset = FVector::ZeroVector;
 					{
-						const ACDGKeyframe* Keyframe = TrajectoryKeyframes[k];
-						if (!Keyframe) continue;
-						if (k > 0)
+						const AnchorType AnchorTypeToUse = FirstKF->LensSettings.AutofocusTargetAnchorType;
+						TArray<UCDGCharacterAnchor*> AnchorComponents;
+						AutofocusActor->GetComponents<UCDGCharacterAnchor>(AnchorComponents);
+						for (const UCDGCharacterAnchor* AnchorComp : AnchorComponents)
 						{
-							CurrentTimeSeconds += Keyframe->TimeToCurrentFrame;
+							if (AnchorComp && AnchorComp->Type == AnchorTypeToUse)
+							{
+								AnchorLocalOffset = AutofocusActor->GetActorTransform()
+									.InverseTransformPosition(AnchorComp->GetComponentLocation());
+								break;
+							}
 						}
+					}
 
-						const float ManualFocusDistance = Keyframe->LensSettings.bUseManualFocusDistance
-							? Keyframe->LensSettings.FocusDistance
-							: 0.0f;
-						AddLensKeyWithStay(ManualFocusChannel, CurrentTimeSeconds, Keyframe, ManualFocusDistance);
+					CameraComponent->FocusSettings.FocusMethod = ECameraFocusMethod::Tracking;
+					CameraComponent->FocusSettings.TrackingFocusSettings.ActorToTrack    = AutofocusActor;
+					CameraComponent->FocusSettings.TrackingFocusSettings.RelativeOffset  = AnchorLocalOffset;
+				}
+				else
+				{
+					// No autofocus actor — use manual distance or disable DOF entirely.
+					const bool bAnyManualFocus = TrajectoryKeyframes.ContainsByPredicate([](const ACDGKeyframe* KF)
+					{
+						return KF && KF->LensSettings.bUseManualFocusDistance;
+					});
+					CameraComponent->FocusSettings.FocusMethod =
+						bAnyManualFocus ? ECameraFocusMethod::Manual : ECameraFocusMethod::Disable;
+
+					if (bAnyManualFocus)
+					{
+						if (UMovieSceneFloatTrack* ManualFocusTrack = MovieScene->AddTrack<UMovieSceneFloatTrack>(ComponentGuid))
+						{
+							ManualFocusTrack->SetPropertyNameAndPath(TEXT("FocusSettings.ManualFocusDistance"), TEXT("FocusSettings.ManualFocusDistance"));
+							UMovieSceneFloatSection* ManualFocusSection = Cast<UMovieSceneFloatSection>(ManualFocusTrack->CreateNewSection());
+							ManualFocusTrack->AddSection(*ManualFocusSection);
+							ManualFocusSection->SetRange(TRange<FFrameNumber>(0, DurationInTicks));
+
+							FMovieSceneFloatChannel& ManualFocusChannel = ManualFocusSection->GetChannel();
+							double CurrentTimeSeconds = 0.0;
+							for (int32 k = 0; k < TrajectoryKeyframes.Num(); ++k)
+							{
+								const ACDGKeyframe* Keyframe = TrajectoryKeyframes[k];
+								if (!Keyframe) continue;
+								if (k > 0)
+								{
+									CurrentTimeSeconds += Keyframe->TimeToCurrentFrame;
+								}
+								const float Dist = Keyframe->LensSettings.bUseManualFocusDistance
+									? Keyframe->LensSettings.FocusDistance : 0.0f;
+								AddLensKeyWithStay(ManualFocusChannel, CurrentTimeSeconds, Keyframe, Dist);
+							}
+						}
 					}
 				}
 			}

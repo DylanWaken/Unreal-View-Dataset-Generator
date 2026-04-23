@@ -4,6 +4,9 @@
 #include "Config/GeneratorStackConfig.h"
 #include "Config/LevelSeqExportConfig.h"
 #include "Generator/CDGTrajectoryGenerator.h"
+#include "Generator/CDGPositioningGenerator.h"
+#include "Generator/CDGMovementGenerator.h"
+#include "Generator/CDGEffectsGenerator.h"
 #include "Trajectory/CDGTrajectory.h"
 #include "Trajectory/CDGKeyframe.h"
 #include "Trajectory/CDGTrajectorySubsystem.h"
@@ -27,11 +30,8 @@
 #include "Animation/AnimSequenceBase.h"
 
 // Asset tools
-#include "AssetToolsModule.h"
-#include "IAssetTools.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "UObject/SavePackage.h"
-#include "Factories/Factory.h"
 
 // Level Sequence
 #include "LevelSequence.h"
@@ -69,6 +69,9 @@
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
 
+// Ticker (deferred next-combo start)
+#include "Containers/Ticker.h"
+
 #define LOCTEXT_NAMESPACE "CDGBatchProcExecService"
 
 static constexpr double kTickResolution = 24000.0;
@@ -79,23 +82,6 @@ static constexpr double kTickResolution = 24000.0;
 
 namespace
 {
-	/** Find a ULevelSequence factory without pulling in a specific header. */
-	UFactory* FindLevelSequenceFactory()
-	{
-		for (TObjectIterator<UClass> It; It; ++It)
-		{
-			UClass* C = *It;
-			if (!C->IsChildOf(UFactory::StaticClass())) continue;
-			if (C->HasAnyClassFlags(CLASS_Abstract)) continue;
-			if (UFactory* F = Cast<UFactory>(C->GetDefaultObject()))
-			{
-				if (F->CanCreateNew() && F->SupportedClass == ULevelSequence::StaticClass())
-					return F;
-			}
-		}
-		return nullptr;
-	}
-
 	/** Sanitise a string for use as a folder/file name component. */
 	FString Sanitise(const FString& In)
 	{
@@ -108,30 +94,129 @@ namespace
 		return Out;
 	}
 
-	/** Delete a UObject asset from disk. */
-	void DeleteAssetByPackageName(const FString& PackageName)
+	/** Clear all tracks and bindings from a MovieScene in-place. */
+	void ClearMovieScene(UMovieScene* MS)
 	{
-#if WITH_EDITOR
-		const FString ShortName   = FPackageName::GetShortName(PackageName);
-		const FString ObjectPath  = PackageName + TEXT(".") + ShortName;
+		if (!MS) return;
+		TArray<UMovieSceneTrack*> TracksToRemove = MS->GetTracks();
+		for (UMovieSceneTrack* T : TracksToRemove) MS->RemoveTrack(*T);
+		for (int32 i = MS->GetSpawnableCount() - 1; i >= 0; --i)
+			MS->RemoveSpawnable(MS->GetSpawnable(i).GetGuid());
+		for (int32 i = MS->GetPossessableCount() - 1; i >= 0; --i)
+			MS->RemovePossessable(MS->GetPossessable(i).GetGuid());
+	}
 
-		// Try to find it in memory first; if not found, the file cleanup still runs.
-		UObject* Asset = FindObject<UObject>(nullptr, *ObjectPath);
+	/**
+	 * Get-or-create a ULevelSequence without ever showing an AssetTools dialog.
+	 *
+	 * Priority:
+	 *   1. FindObject  – already in memory
+	 *   2. LoadObject  – exists on disk, load it silently
+	 *   3. NewObject   – create a fresh package + asset directly (no dialog path)
+	 *
+	 * When an existing sequence is found (cases 1/2) its MovieScene is cleared so
+	 * the caller receives a blank slate.
+	 */
+	ULevelSequence* ForceGetOrCreateLevelSequence(const FString& PackageName, const FString& AssetName)
+	{
+		const FString ObjectPath = PackageName + TEXT(".") + AssetName;
 
-		UPackage* Package = nullptr;
-		if (Asset)
+		// 1. In memory?
+		ULevelSequence* Seq = FindObject<ULevelSequence>(nullptr, *ObjectPath);
+		// Guard: MarkAsGarbage() doesn't set Unreachable until GC runs, so FindObject
+		// can still return garbage-marked objects from the previous combo.  Discard them.
+		if (Seq && !IsValid(Seq)) Seq = nullptr;
+
+		// 2. On disk but not loaded?
+		if (!Seq)
 		{
-			Package = Asset->GetOutermost();
-			if (Asset->IsRooted()) Asset->RemoveFromRoot();
-			Asset->MarkAsGarbage();
+			Seq = LoadObject<ULevelSequence>(nullptr, *ObjectPath);
+			if (Seq && !IsValid(Seq)) Seq = nullptr;
 		}
 
-		FString PackageFilename;
-		if (FPackageName::TryConvertLongPackageNameToFilename(PackageName, PackageFilename, FPackageName::GetAssetPackageExtension()))
+		if (Seq)
 		{
-			if (Package) Package->MarkAsGarbage();
-			IPlatformFile& PF = FPlatformFileManager::Get().GetPlatformFile();
-			PF.DeleteFile(*PackageFilename);
+			ClearMovieScene(Seq->GetMovieScene());
+			Seq->Modify();
+			return Seq;
+		}
+
+		// 3. Create from scratch – bypass AssetTools entirely to avoid dialogs.
+		//
+		// If a garbage-marked UPackage with this name is still lurking in memory
+		// (not yet GC'd), FindObject<UPackage> (called inside CreatePackage) will
+		// return it and we'll end up parenting our new sequence to a dead package.
+		// Rename the old package to free the name before creating a fresh one.
+		if (UPackage* OldPkg = FindObject<UPackage>(nullptr, *PackageName))
+		{
+			if (!IsValid(OldPkg))
+			{
+				OldPkg->Rename(nullptr, nullptr,
+					REN_DontCreateRedirectors | REN_ForceNoResetLoaders | REN_NonTransactional);
+			}
+		}
+
+		UPackage* Pkg = CreatePackage(*PackageName);
+		if (!Pkg) return nullptr;
+
+		Seq = NewObject<ULevelSequence>(Pkg, *AssetName, RF_Public | RF_Standalone);
+		if (!Seq) return nullptr;
+
+		Seq->Initialize();
+
+		// Notify the asset registry so the new asset shows up in the Content Browser.
+		FAssetRegistryModule::AssetCreated(Seq);
+
+		return Seq;
+	}
+
+	/**
+	 * Fully delete a UObject asset: unload the package from memory and delete
+	 * the .uasset file on disk.  Safe to call even if the asset is not loaded.
+	 */
+	void ForceDeleteAsset(const FString& PackageName)
+	{
+#if WITH_EDITOR
+		const FString ShortName  = FPackageName::GetShortName(PackageName);
+		const FString ObjectPath = PackageName + TEXT(".") + ShortName;
+
+		// Ensure the object is in memory so we can mark it + its package.
+		UObject* Asset = FindObject<UObject>(nullptr, *ObjectPath);
+		if (!Asset)
+			Asset = LoadObject<UObject>(nullptr, *ObjectPath);
+
+		if (Asset)
+		{
+			UPackage* Package = Asset->GetOutermost();
+			if (Asset->IsRooted()) Asset->RemoveFromRoot();
+
+			// Rename the asset to the transient package so that FindObject can
+			// no longer locate it by the original path on the next combo.
+			// MarkAsGarbage() alone only sets EInternalObjectFlags::Garbage;
+			// the object stays in the name hash and FindObject still returns it
+			// until the GC traversal sets Unreachable.  Moving to the transient
+			// package breaks the path lookup immediately.
+			Asset->Rename(nullptr, GetTransientPackage(),
+				REN_DontCreateRedirectors | REN_ForceNoResetLoaders | REN_NonTransactional);
+			Asset->MarkAsGarbage();
+
+			if (Package && Package != GetTransientPackage())
+			{
+				// Rename the package itself so CreatePackage can produce a fresh
+				// one with the original name on the next combo.
+				Package->Rename(nullptr, nullptr,
+					REN_DontCreateRedirectors | REN_ForceNoResetLoaders | REN_NonTransactional);
+				Package->ClearFlags(RF_Standalone);
+				Package->MarkAsGarbage();
+			}
+		}
+
+		// Delete the .uasset file regardless of whether the object was in memory.
+		FString PackageFilename;
+		if (FPackageName::TryConvertLongPackageNameToFilename(
+				PackageName, PackageFilename, FPackageName::GetAssetPackageExtension()))
+		{
+			FPlatformFileManager::Get().GetPlatformFile().DeleteFile(*PackageFilename);
 		}
 #endif
 	}
@@ -229,6 +314,28 @@ void UCDGBatchProcExecService::DiscoverAnchorsAndBeginCombos()
 		return;
 	}
 
+	// ── Wipe any leftover CDG actors from a previous run on this level ─────────
+	{
+		UCDGTrajectorySubsystem* TrajSys = World->GetSubsystem<UCDGTrajectorySubsystem>();
+		if (TrajSys)
+		{
+			for (const FName& Name : TrajSys->GetTrajectoryNames())
+				TrajSys->DeleteTrajectory(Name);
+		}
+
+		// Destroy orphaned keyframe actors not caught by the subsystem
+		TArray<ACDGKeyframe*> OrphanKFs;
+		for (TActorIterator<ACDGKeyframe> It(World); It; ++It) OrphanKFs.Add(*It);
+		for (ACDGKeyframe* KF : OrphanKFs) World->EditorDestroyActor(KF, true);
+
+		// Destroy any cine-camera actors left over from a previous export
+		TArray<ACineCameraActor*> OrphanCams;
+		for (TActorIterator<ACineCameraActor> It(World); It; ++It) OrphanCams.Add(*It);
+		for (ACineCameraActor* Cam : OrphanCams) World->EditorDestroyActor(Cam, true);
+
+		BroadcastLog(TEXT("  Cleaned up leftover CDG actors from previous run."));
+	}
+
 	CurrentAnchors.Empty();
 	for (ACDGLevelSceneAnchor* Anchor : GetAnchors(World))
 	{
@@ -313,6 +420,7 @@ void UCDGBatchProcExecService::ExecuteCurrentCombo()
 	const FString ComboKey = MakeComboKey(LevelShortName, AnchorName, CharShortName, AnimShortName);
 
 	BroadcastLog(FString::Printf(TEXT("  Combo [%d/%d]: %s"), CompletedCombos + 1, TotalCombos, *ComboKey));
+	BroadcastDetailedProgress(0, 0); // shots not yet known
 
 	// ── Resolve assets ────────────────────────────────────────────────────────
 	UBlueprint* CharBP = Cast<UBlueprint>(CharAsset.GetAsset());
@@ -362,7 +470,7 @@ void UCDGBatchProcExecService::ExecuteCurrentCombo()
 
 	// ── 3. Instantiate generators and set reference ───────────────────────────
 	InstantiateGenerators(World, RefSeq, Character);
-	if (Generators.IsEmpty())
+	if (PositioningGenerators.IsEmpty() && MovementGenerators.IsEmpty())
 	{
 		BroadcastLog(TEXT("    ERROR: No generators could be instantiated — skipping."));
 		DeleteReferenceSequence();
@@ -385,6 +493,14 @@ void UCDGBatchProcExecService::ExecuteCurrentCombo()
 		return;
 	}
 	BroadcastLog(FString::Printf(TEXT("    Generated %d trajectory/ies."), Trajectories.Num()));
+	// Extrapolate global total: assume every remaining combo produces the same
+	// shot count as this one (all combos share the same generator stack).
+	// This gives the correct denominator from the very first combo onward.
+	//   TotalShotsKnown = shots_already_rendered
+	//                   + this_combo_shots × remaining_combos_including_this_one
+	TotalShotsKnown = TotalShotsRendered
+		+ Trajectories.Num() * FMath::Max(1, TotalCombos - CompletedCombos);
+	BroadcastDetailedProgress(0, Trajectories.Num()); // shots generated, render pending
 
 	// ── 5. Export trajectories to level sequence ──────────────────────────────
 	ULevelSequence* MasterSeq = ExportTrajectoriesAsLevelSequence(World, RefSeq, Trajectories, FPS);
@@ -423,15 +539,32 @@ void UCDGBatchProcExecService::ExecuteCurrentCombo()
 		? Input.ExporterConfig->TemporalSampleCount : 1;
 
 	// ── 7. Start render (async — continuation fires in lambda) ────────────────
-	// Capture everything by value / weak-ptr
+	// Capture everything by value / weak-ptr.
+	// ShotCount is captured NOW so the callback never depends on mutable state
+	// (CreatedShotSequencePaths is emptied during cleanup before the ticker fires).
 	const FString ComboOutputDir = FPaths::Combine(RootOutputDir, ComboKey);
 	const int32   FPSCapture     = FPS;
+	const int32   ShotCount      = Trajectories.Num();
 
 	TWeakObjectPtr<UCDGBatchProcExecService> WeakThis = this;
 
+	// Per-shot callback: fires as each individual MRQ job (shot) finishes.
+	// Captures ShotCount so the per-combo ShotCurrent/ShotTotal stays correct.
+	TSharedPtr<int32> ComboShotsDone = MakeShared<int32>(0);
+
+	auto OnShotRendered = [WeakThis, ComboShotsDone, ShotCount]()
+	{
+		if (UCDGBatchProcExecService* Self = WeakThis.Get())
+		{
+			++(*ComboShotsDone);
+			++Self->TotalShotsRendered;
+			Self->BroadcastDetailedProgress(*ComboShotsDone, ShotCount);
+		}
+	};
+
 	bool bRenderStarted = CDGMRQInterface::RenderTrajectoriesWithSequence(
 		MasterSeq, Trajectories, RenderConfig,
-		[WeakThis, ComboOutputDir, ComboKey, FPSCapture](bool bSuccess)
+		[WeakThis, ComboOutputDir, ComboKey, FPSCapture, ShotCount](bool bSuccess)
 		{
 			if (!WeakThis.IsValid()) return;
 			UCDGBatchProcExecService* Self = WeakThis.Get();
@@ -449,26 +582,44 @@ void UCDGBatchProcExecService::ExecuteCurrentCombo()
 				Self->WriteComboIndexJson(ComboOutputDir, ComboKey, FPSCapture);
 			}
 
-			// 7b. Clean up
+			// 7b. Clean up this combo's assets and actors
 			Self->CleanupComboAssets(W);
 			Self->DestroyGenerators();
 			Self->DeleteReferenceSequence();
 			Self->DestroySpawnedCharacter(W);
 
-			// 7c. Advance to next combo
+			// 7c. Advance counters
 			++Self->CompletedCombos;
 			Self->OnProgressUpdated.Broadcast(Self->CompletedCombos, Self->TotalCombos);
 
-			if (!Self->AdvanceComboIndices())
-			{
-				++Self->CurrentLevelIdx;
-				Self->BeginProcessLevel();
-			}
-			else
-			{
-				Self->BeginNextCombo();
-			}
-		});
+			// 7d. Defer advancement to the next combo by one engine tick.
+			//
+			// OnExecutorFinished fires DURING the MRQ executor's shutdown, before
+			// the subsystem clears its ActiveExecutor pointer.  If we call
+			// RenderTrajectoriesWithSequence immediately from here it hits the
+			// "already rendering" guard and returns false, causing every combo
+			// after the first to be silently skipped.  A one-tick deferral lets
+			// the executor fully release before we attempt the next render.
+			FTSTicker::GetCoreTicker().AddTicker(
+				FTickerDelegate::CreateLambda([WeakThis](float) -> bool
+				{
+					if (UCDGBatchProcExecService* S = WeakThis.Get())
+					{
+						if (!S->AdvanceComboIndices())
+						{
+							++S->CurrentLevelIdx;
+							S->BeginProcessLevel();
+						}
+						else
+						{
+							S->BeginNextCombo();
+						}
+					}
+					return false; // single-shot
+				}),
+				0.f); // fire on the very next tick
+		},
+		MoveTemp(OnShotRendered)); // per-shot callback bound to OnMoviePipelineWorkFinished
 
 	if (!bRenderStarted)
 	{
@@ -531,16 +682,10 @@ ULevelSequence* UCDGBatchProcExecService::CreateReferenceSequence(
 {
 	if (!World || !Character || !Anim) return nullptr;
 
-	IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
-	UFactory* Factory = FindLevelSequenceFactory();
-	if (!Factory) return nullptr;
+	const FString SeqName    = TEXT("CDGBatchRefSeq_") + ComboKey;
+	const FString SeqPkgName = TEXT("/Game/CDGBatch_Temp/") + SeqName;
 
-	const FString SeqName       = TEXT("CDGBatchRefSeq_") + ComboKey;
-	const FString SeqPkgPath    = TEXT("/Game/CDGBatch_Temp");
-
-	// Create or re-use existing asset at this path
-	ULevelSequence* RefSeq = Cast<ULevelSequence>(
-		AssetTools.CreateAsset(SeqName, SeqPkgPath, ULevelSequence::StaticClass(), Factory));
+	ULevelSequence* RefSeq = ForceGetOrCreateLevelSequence(SeqPkgName, SeqName);
 	if (!RefSeq) return nullptr;
 
 	UMovieScene* MS = RefSeq->GetMovieScene();
@@ -623,72 +768,148 @@ void UCDGBatchProcExecService::InstantiateGenerators(
 	}
 
 	TSharedPtr<FJsonObject> RootObj;
-	TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Input.GeneratorConfig->GeneratorsJson);
+	TSharedRef<TJsonReader<>> Reader =
+		TJsonReaderFactory<>::Create(Input.GeneratorConfig->GeneratorsJson);
 	if (!FJsonSerializer::Deserialize(Reader, RootObj) || !RootObj.IsValid()) return;
 
-	const TArray<TSharedPtr<FJsonValue>>* GensArray = nullptr;
-	if (!RootObj->TryGetArrayField(TEXT("generators"), GensArray) || !GensArray) return;
-
-	for (const TSharedPtr<FJsonValue>& GenVal : *GensArray)
+	// Helper: instantiate one generator from a JSON entry, inject context
+	auto InstantiateOne = [&](const TSharedPtr<FJsonValue>& Val) -> UCDGTrajectoryGenerator*
 	{
-		const TSharedPtr<FJsonObject>* GenObjPtr = nullptr;
-		if (!GenVal->TryGetObject(GenObjPtr) || !GenObjPtr) continue;
+		const TSharedPtr<FJsonObject>* ObjPtr = nullptr;
+		if (!Val->TryGetObject(ObjPtr) || !ObjPtr) return nullptr;
 
 		FString ClassName;
-		if (!(*GenObjPtr)->TryGetStringField(TEXT("class"), ClassName)) continue;
+		if (!(*ObjPtr)->TryGetStringField(TEXT("class"), ClassName)) return nullptr;
 
 		UClass* GenClass = FindObject<UClass>(nullptr, *ClassName);
-		if (!GenClass) continue;
+		if (!GenClass) return nullptr;
 
 		UCDGTrajectoryGenerator* Gen = NewObject<UCDGTrajectoryGenerator>(World, GenClass);
-		if (!Gen) continue;
+		if (!Gen) return nullptr;
 
 		Gen->AddToRoot();
 
-		// Restore config
-		const TSharedPtr<FJsonObject>* CfgObjPtr = nullptr;
-		if ((*GenObjPtr)->TryGetObjectField(TEXT("config"), CfgObjPtr) && CfgObjPtr)
+		const TSharedPtr<FJsonObject>* CfgPtr = nullptr;
+		if ((*ObjPtr)->TryGetObjectField(TEXT("config"), CfgPtr) && CfgPtr)
 		{
-			Gen->FetchGeneratorConfig(*CfgObjPtr);
+			Gen->FetchGeneratorConfig(*CfgPtr);
 		}
 
-		// Inject reference sequence + character actor
-		Gen->ReferenceSequence    = RefSeq;
-		Gen->PrimaryCharacterActor = Character;
+		Gen->ReferenceSequence = RefSeq;
+		if (UCDGPositioningGenerator* PosGen = Cast<UCDGPositioningGenerator>(Gen))
+		{
+			PosGen->PrimaryCharacterActor = Character;
+		}
+		return Gen;
+	};
 
-		// If generator has bLetBatchProcessorFill set on the config asset, ensure
-		// the FocusedAnchor is left at its default — no override needed here.
+	// Helper: populate one stage's typed array from a JSON key
+	auto GetStageArray = [&RootObj](const TCHAR* Key) -> const TArray<TSharedPtr<FJsonValue>>*
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Arr = nullptr;
+		RootObj->TryGetArrayField(Key, Arr);
+		return Arr;
+	};
 
-		Generators.Add(Gen);
+	if (const TArray<TSharedPtr<FJsonValue>>* PosArr = GetStageArray(TEXT("positioning")))
+	{
+		for (const TSharedPtr<FJsonValue>& Val : *PosArr)
+		{
+			if (UCDGPositioningGenerator* Typed =
+				Cast<UCDGPositioningGenerator>(InstantiateOne(Val)))
+			{
+				PositioningGenerators.Add(Typed);
+			}
+		}
 	}
 
-	BroadcastLog(FString::Printf(TEXT("    Instantiated %d generator(s)."), Generators.Num()));
+	if (const TArray<TSharedPtr<FJsonValue>>* MovArr = GetStageArray(TEXT("movement")))
+	{
+		for (const TSharedPtr<FJsonValue>& Val : *MovArr)
+		{
+			if (UCDGMovementGenerator* Typed =
+				Cast<UCDGMovementGenerator>(InstantiateOne(Val)))
+			{
+				MovementGenerators.Add(Typed);
+			}
+		}
+	}
+
+	if (const TArray<TSharedPtr<FJsonValue>>* FxArr = GetStageArray(TEXT("effects")))
+	{
+		for (const TSharedPtr<FJsonValue>& Val : *FxArr)
+		{
+			if (UCDGEffectsGenerator* Typed =
+				Cast<UCDGEffectsGenerator>(InstantiateOne(Val)))
+			{
+				EffectsGenerators.Add(Typed);
+			}
+		}
+	}
+
+	BroadcastLog(FString::Printf(
+		TEXT("    Instantiated %d positioning / %d movement / %d effects generator(s)."),
+		PositioningGenerators.Num(), MovementGenerators.Num(), EffectsGenerators.Num()));
 }
 
 TArray<ACDGTrajectory*> UCDGBatchProcExecService::RunGenerators(UWorld* World)
 {
-	TArray<ACDGTrajectory*> AllCreated;
-
-	for (UCDGTrajectoryGenerator* Gen : Generators)
+	// Helper: re-outer a generator to the current world
+	auto PrepareGen = [World](UCDGTrajectoryGenerator* Gen)
 	{
-		if (!Gen) continue;
-
-		// Ensure the generator is outered to the current editor world
-		if (Gen->GetOuter() != World)
+		if (Gen && Gen->GetOuter() != World)
 		{
 			Gen->Rename(nullptr, World,
 				REN_DoNotDirty | REN_DontCreateRedirectors | REN_NonTransactional);
 		}
+	};
 
-		TArray<ACDGTrajectory*> Created = Gen->Generate();
-		AllCreated.Append(Created);
+	// ── Cartesian product: every (positioning × movement) pair runs independently.
+	// Total trajectories = sum_i(placements_i) × |MovementGenerators|
+	// Effects are applied in sequence to the full combined result.
+	TArray<ACDGTrajectory*> AllTrajectories;
+
+	for (UCDGPositioningGenerator* PosGen : PositioningGenerators)
+	{
+		if (!PosGen) continue;
+		PrepareGen(PosGen);
+
+		const TArray<FCDGCameraPlacement> Placements = PosGen->GeneratePlacements();
 
 		UE_LOG(LogCameraDatasetGenEditor, Log,
-			TEXT("[BatchExec] %s produced %d trajectory/ies"),
-			*Gen->GetGeneratorName().ToString(), Created.Num());
+			TEXT("[BatchExec] %s produced %d placement(s)"),
+			*PosGen->GetGeneratorName().ToString(), Placements.Num());
+
+		if (Placements.IsEmpty()) continue;
+
+		for (UCDGMovementGenerator* MovGen : MovementGenerators)
+		{
+			if (!MovGen) continue;
+			PrepareGen(MovGen);
+
+			TArray<ACDGTrajectory*> Created = MovGen->GenerateMovement(Placements);
+			AllTrajectories.Append(Created);
+
+			UE_LOG(LogCameraDatasetGenEditor, Log,
+				TEXT("[BatchExec] %s × %s → %d trajectory/ies"),
+				*PosGen->GetGeneratorName().ToString(),
+				*MovGen->GetGeneratorName().ToString(),
+				Created.Num());
+		}
 	}
 
-	return AllCreated;
+	// ── Effects: chained in sequence over the full combined trajectory set.
+	for (UCDGEffectsGenerator* FxGen : EffectsGenerators)
+	{
+		if (!FxGen) continue;
+		PrepareGen(FxGen);
+		FxGen->ApplyEffects(AllTrajectories);
+		UE_LOG(LogCameraDatasetGenEditor, Log,
+			TEXT("[BatchExec] %s applied effects to %d trajectory/ies"),
+			*FxGen->GetGeneratorName().ToString(), AllTrajectories.Num());
+	}
+
+	return AllTrajectories;
 }
 
 ULevelSequence* UCDGBatchProcExecService::ExportTrajectoriesAsLevelSequence(
@@ -712,8 +933,9 @@ ULevelSequence* UCDGBatchProcExecService::ExportTrajectoriesAsLevelSequence(
 	MasterMS->SetDisplayRate(FrameRate);
 	MasterMS->SetTickResolutionDirectly(FFrameRate(kTickResolution, 1));
 
-	// Clear master's existing tracks
-	for (UMovieSceneTrack* T : MasterMS->GetTracks()) MasterMS->RemoveTrack(*T);
+	// Clear master's existing tracks — copy first to avoid mutating while iterating
+	TArray<UMovieSceneTrack*> MasterTracksToRemove = MasterMS->GetTracks();
+	for (UMovieSceneTrack* T : MasterTracksToRemove) MasterMS->RemoveTrack(*T);
 	for (int32 i = MasterMS->GetSpawnableCount() - 1; i >= 0; --i)
 		MasterMS->RemoveSpawnable(MasterMS->GetSpawnable(i).GetGuid());
 	for (int32 i = MasterMS->GetPossessableCount() - 1; i >= 0; --i)
@@ -722,35 +944,59 @@ ULevelSequence* UCDGBatchProcExecService::ExportTrajectoriesAsLevelSequence(
 	UMovieSceneCinematicShotTrack* ShotTrack = MasterMS->AddTrack<UMovieSceneCinematicShotTrack>();
 	if (!ShotTrack) return nullptr;
 
-	IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
-	const FString MasterPackageName = MasterSeq->GetOutermost()->GetName();
-	const FString MasterPackagePath = FPackageName::GetLongPackagePath(MasterPackageName);
+	const FString MasterPackageName  = MasterSeq->GetOutermost()->GetName();
+	const FString MasterPackagePath  = FPackageName::GetLongPackagePath(MasterPackageName);
 	const FString MasterSeqShortName = FPackageName::GetShortName(MasterPackageName);
 
-	UFactory* Factory = FindLevelSequenceFactory();
-	if (!Factory) return nullptr;
-
 	CreatedShotSequencePaths.Empty();
-	FFrameNumber StartFrame = 0;
+
+	// STEP 3 contract: every shot's duration MUST equal the reference sequence
+	// (which is the animation's length), regardless of how the movement
+	// generator decided to space its keyframes.  Deriving the shot length from
+	// the reference sequence — rather than from Trajectory->GetTrajectoryDuration()
+	// — is what guarantees each movement plays exactly once over the animation
+	// and nothing more (no looping, no random post-movement rotations, no "5×
+	// animation" shots when multiple keyframes pile up on a trajectory).
+	UMovieScene* RefMasterMS = RefSeq->GetMovieScene();
+	const TRange<FFrameNumber> RefRange =
+		RefMasterMS ? RefMasterMS->GetPlaybackRange() : TRange<FFrameNumber>::Empty();
+	const int32 RefDurationTicks =
+		(RefRange.HasLowerBound() && RefRange.HasUpperBound() && !RefRange.IsEmpty())
+			? (RefRange.GetUpperBoundValue().Value - RefRange.GetLowerBoundValue().Value)
+			: 0;
+
+	if (RefDurationTicks <= 0)
+	{
+		UE_LOG(LogCameraDatasetGenEditor, Error,
+			TEXT("[BatchExec] Reference sequence '%s' has no valid playback range; cannot export shots."),
+			*RefSeq->GetName());
+		return nullptr;
+	}
+
+	// All shots are the same length (single animation), so this is constant.
+	const int32 DurationTicks = RefDurationTicks;
+
+	// Each shot is an independent level sequence that runs for the animation's
+	// duration. Shots are *not* concatenated on the master — instead they are
+	// stacked, each starting at frame 0 on its own row, so the master's
+	// playback range equals a single animation length.  MRQ still renders each
+	// shot independently because each job is bound to its own ShotSequence.
+	int32 ShotRowIndex = 0;
 
 	for (ACDGTrajectory* Trajectory : Trajectories)
 	{
 		if (!Trajectory) continue;
 
-		const double TrajDuration = Trajectory->GetTrajectoryDuration();
-		const int32  DurationTicks = FMath::Max(1,
-			FMath::RoundToInt(TrajDuration * kTickResolution));
-
 		// ── Create (or reuse) shot sequence ──────────────────────────────────
-		const FString ShotName = FString::Printf(TEXT("%s_Shot_%s"),
+		// ForceGetOrCreateLevelSequence handles every case without dialogs:
+		//   • in-memory object (previous combo this session)
+		//   • on-disk asset not yet loaded (leftover from a prior session / manual export)
+		//   • genuinely new asset
+		const FString ShotName        = FString::Printf(TEXT("%s_Shot_%s"),
 			*MasterSeqShortName, *Trajectory->TrajectoryName.ToString());
 		const FString ShotPackageName = MasterPackagePath / ShotName;
 
-		// Delete stale shot if it exists
-		DeleteAssetByPackageName(ShotPackageName);
-
-		ULevelSequence* ShotSeq = Cast<ULevelSequence>(
-			AssetTools.CreateAsset(ShotName, MasterPackagePath, ULevelSequence::StaticClass(), Factory));
+		ULevelSequence* ShotSeq = ForceGetOrCreateLevelSequence(ShotPackageName, ShotName);
 		if (!ShotSeq) continue;
 
 		UMovieScene* ShotMS = ShotSeq->GetMovieScene();
@@ -975,14 +1221,20 @@ ULevelSequence* UCDGBatchProcExecService::ExportTrajectoriesAsLevelSequence(
 		SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
 		UPackage::SavePackage(ShotSeq->GetOutermost(), ShotSeq, *ShotPkgFilename, SaveArgs);
 
-		// Add to master cinematic shot track
-		ShotTrack->AddSequence(ShotSeq, StartFrame, DurationTicks);
-		StartFrame += FFrameNumber(DurationTicks);
+		// Add to master cinematic shot track at frame 0 on its own row so
+		// shots are stacked instead of stitched end-to-end.
+		if (UMovieSceneSubSection* SubSection =
+			ShotTrack->AddSequence(ShotSeq, FFrameNumber(0), DurationTicks))
+		{
+			SubSection->SetRowIndex(ShotRowIndex++);
+		}
 
 		CreatedShotSequencePaths.Add(ShotSeq->GetOutermost()->GetName());
 	}
 
-	MasterMS->SetPlaybackRange(TRange<FFrameNumber>(0, StartFrame));
+	// All shots share the same duration (the animation length), so the master's
+	// playback range is simply that single duration.
+	MasterMS->SetPlaybackRange(TRange<FFrameNumber>(0, FFrameNumber(DurationTicks)));
 	MasterSeq->MarkPackageDirty();
 
 	// Persist master
@@ -1035,17 +1287,42 @@ void UCDGBatchProcExecService::CleanupComboAssets(UWorld* World)
 	for (ACineCameraActor* Cam : Cameras) World->EditorDestroyActor(Cam, true);
 
 	// ── Delete shot sequence assets ───────────────────────────────────────────
-	for (const FString& ShotPkg : CreatedShotSequencePaths)
-	{
-		DeleteAssetByPackageName(ShotPkg);
-	}
-	CreatedShotSequencePaths.Empty();
-
-	// ── Delete master sequence ────────────────────────────────────────────────
+	// Disconnect shots from the master first so they have no hard references,
+	// then fully unload + delete each one.
 	UCDGLevelSeqSubsystem* LevelSeqSys = World->GetSubsystem<UCDGLevelSeqSubsystem>();
 	if (LevelSeqSys)
 	{
-		LevelSeqSys->DeleteLevelSequence();
+		if (ULevelSequence* MasterSeq = LevelSeqSys->GetActiveLevelSequence())
+		{
+			if (UMovieScene* MasterMS = MasterSeq->GetMovieScene())
+			{
+				TArray<UMovieSceneTrack*> TracksToRemove = MasterMS->GetTracks();
+				for (UMovieSceneTrack* T : TracksToRemove) MasterMS->RemoveTrack(*T);
+			}
+		}
+	}
+
+	for (const FString& ShotPkg : CreatedShotSequencePaths)
+	{
+		ForceDeleteAsset(ShotPkg);
+	}
+	CreatedShotSequencePaths.Empty();
+
+	// ── Delete master sequence non-interactively ─────────────────────────────
+	// We bypass LevelSeqSys->DeleteLevelSequence() here because it internally
+	// calls ObjectTools::DeleteAssets which can show confirmation dialogs and is
+	// unsafe to call from within the MRQ OnExecutorFinished callback chain.
+	// Instead we ForceDeleteAsset the master directly and reset the subsystem.
+	if (LevelSeqSys)
+	{
+		const FString MasterPkgName = LevelSeqSys->GetSequencePackageName();
+		if (!MasterPkgName.IsEmpty())
+		{
+			ForceDeleteAsset(MasterPkgName);
+		}
+		// Tell the subsystem its sequence is gone so InitLevelSequence() will
+		// create a fresh one for the next combo.
+		LevelSeqSys->ResetActiveSequence();
 	}
 }
 
@@ -1060,11 +1337,17 @@ void UCDGBatchProcExecService::DestroySpawnedCharacter(UWorld* World)
 
 void UCDGBatchProcExecService::DestroyGenerators()
 {
-	for (UCDGTrajectoryGenerator* Gen : Generators)
-	{
+	for (UCDGPositioningGenerator* Gen : PositioningGenerators)
 		if (Gen && Gen->IsRooted()) Gen->RemoveFromRoot();
-	}
-	Generators.Empty();
+	PositioningGenerators.Empty();
+
+	for (UCDGMovementGenerator* Gen : MovementGenerators)
+		if (Gen && Gen->IsRooted()) Gen->RemoveFromRoot();
+	MovementGenerators.Empty();
+
+	for (UCDGEffectsGenerator* Gen : EffectsGenerators)
+		if (Gen && Gen->IsRooted()) Gen->RemoveFromRoot();
+	EffectsGenerators.Empty();
 }
 
 void UCDGBatchProcExecService::DeleteReferenceSequence()
@@ -1073,7 +1356,7 @@ void UCDGBatchProcExecService::DeleteReferenceSequence()
 	{
 		const FString PkgName = CurrentRefSequence->GetOutermost()->GetName();
 		CurrentRefSequence.Reset();
-		DeleteAssetByPackageName(PkgName);
+		ForceDeleteAsset(PkgName);
 	}
 }
 
@@ -1168,6 +1451,26 @@ void UCDGBatchProcExecService::BroadcastLog(const FString& Msg)
 {
 	UE_LOG(LogCameraDatasetGenEditor, Log, TEXT("[BatchExec] %s"), *Msg);
 	OnLogMessage.Broadcast(Msg);
+}
+
+void UCDGBatchProcExecService::BroadcastDetailedProgress(int32 ShotCurrent, int32 ShotTotal)
+{
+	FBatchDetailedProgress D;
+	D.LevelCurrent        = CurrentLevelIdx + 1;
+	D.LevelTotal          = Input.Levels.Num();
+	D.AnchorCurrent       = CurrentAnchorIdx + 1;
+	D.AnchorTotal         = CurrentAnchors.Num();
+	D.CharacterCurrent    = CurrentCharacterIdx + 1;
+	D.CharacterTotal      = Input.Characters.Num();
+	D.AnimCurrent         = CurrentAnimIdx + 1;
+	D.AnimTotal           = Input.Animations.Num();
+	D.ShotCurrent         = ShotCurrent;
+	D.ShotTotal           = ShotTotal;
+	D.ComboCurrent        = CompletedCombos;
+	D.ComboTotal          = TotalCombos;
+	D.GlobalShotsRendered = TotalShotsRendered;
+	D.GlobalShotsTotal    = TotalShotsKnown;
+	OnDetailedProgressUpdated.Broadcast(D);
 }
 
 void UCDGBatchProcExecService::Finish(bool bSuccess)

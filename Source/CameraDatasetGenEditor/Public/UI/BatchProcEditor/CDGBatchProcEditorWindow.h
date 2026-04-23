@@ -11,6 +11,7 @@ class UBatchProcConfig;
 class UGeneratorStackConfig;
 class ULevelSeqExportConfig;
 class UCDGBatchProcExecService;
+class SBatchProgressWindow;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // List item types
@@ -117,6 +118,9 @@ private:
 	FReply OnStartBatchProcClicked();
 	FReply OnCancelBatchProcClicked();
 
+	/** Cancel logic without an FReply — called from the progress window's FSimpleDelegate. */
+	void OnCancelBatchProcClicked_Internal();
+
 	// ── Helpers ──────────────────────────────────────────────────────────────
 
 	/** Recompute bHasMismatch on all character and animation items and refresh lists. */
@@ -165,10 +169,12 @@ private:
 	// Active batch execution service (valid while a batch is running)
 	TObjectPtr<UCDGBatchProcExecService> ActiveBatchService;
 
-	// Progress display
+	// Floating always-on-top progress window (valid while a batch is running)
+	TSharedPtr<SBatchProgressWindow> ProgressWidget;
+
+	// Lightweight progress counters for the Start button label
 	int32 BatchProgress      = 0;
 	int32 BatchProgressTotal = 0;
-	TArray<FString> BatchLog;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

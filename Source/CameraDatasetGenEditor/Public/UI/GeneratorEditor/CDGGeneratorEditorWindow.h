@@ -8,13 +8,16 @@
 #include "Widgets/Views/SListView.h"
 
 class UCDGTrajectoryGenerator;
+class UCDGPositioningGenerator;
+class UCDGMovementGenerator;
+class UCDGEffectsGenerator;
 class ULevelSequence;
 class UGeneratorStackConfig;
 class IDetailsView;
 struct FAssetData;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FGeneratorClassEntry — one entry in the "type to add" combo box
+// FGeneratorClassEntry — one entry in a stage's "type to add" combo box
 // ─────────────────────────────────────────────────────────────────────────────
 struct FGeneratorClassEntry
 {
@@ -27,7 +30,7 @@ struct FGeneratorClassEntry
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FGeneratorStackItem — one entry in the generator stack list
+// FGeneratorStackItem — one row in a stage's list
 // ─────────────────────────────────────────────────────────────────────────────
 struct FGeneratorStackItem
 {
@@ -40,19 +43,21 @@ struct FGeneratorStackItem
 // ─────────────────────────────────────────────────────────────────────────────
 // SGeneratorEditorWindow
 //
-// Slate window for configuring and running trajectory generators.
+// Slate window for configuring and running the three-stage trajectory pipeline:
+//
+//   POSITIONING  →  MOVEMENT  →  EFFECTS
 //
 // Layout:
-//   ┌─────────────────────┬────────────────────────────────────────┐
-//   │  Generator Stack    │  Generator Configuration (IDetailsView) │
-//   │  [Type Combo] [Add] │                                        │
-//   │  1. StaticGen       │  All UPROPERTY fields for the selected  │
-//   │  2. StaticGen       │  generator instance are shown here.    │
-//   │  [↑][↓]  [Remove]  │                                        │
-//   ├─────────────────────┴────────────────────────────────────────┤
-//   │  Reference Sequence:  [SObjectPropertyEntryBox]              │
-//   │  [Generate]  [Clear All]      [Export Config]  [Load Config] │
-//   └──────────────────────────────────────────────────────────────┘
+//   ┌────────────────────────────────────────────────────────────────────────┐
+//   │  [Positioning Stack] [Movement Stack] [Effects Stack]                  │
+//   │  Each stack has: [TypeCombo][Add] — list — [Remove]                   │
+//   ├────────────────────────────────────────────────────────────────────────┤
+//   │  Generator Configuration (IDetailsView for the selected generator)     │
+//   ├────────────────────────────────────────────────────────────────────────┤
+//   │  Config Asset: [picker] [Save Config]                                  │
+//   │  Reference Sequence: [picker]  [Let Batch Processor Fill]              │
+//   │  [Generate]  [Clear All]              [Export Config]  [Load Config]   │
+//   └────────────────────────────────────────────────────────────────────────┘
 // ─────────────────────────────────────────────────────────────────────────────
 class SGeneratorEditorWindow : public SCompoundWidget
 {
@@ -64,52 +69,63 @@ public:
 	virtual ~SGeneratorEditorWindow();
 
 private:
-	// ── Left panel: generator stack ─────────────────────────────────────────
+	// ── Stage stack helpers ───────────────────────────────────────────────────
 
+	/** Build one complete stage panel (title + combo + list + remove button). */
+	TSharedRef<SWidget> MakeStagePanel(
+		const FText& StageTitle,
+		TArray<TSharedPtr<FGeneratorClassEntry>>&                    InAvailableClasses,
+		TSharedPtr<FGeneratorClassEntry>&                            InSelectedAddClass,
+		TArray<TSharedPtr<FGeneratorStackItem>>&                     InItems,
+		TSharedPtr<SListView<TSharedPtr<FGeneratorStackItem>>>&      OutListView);
+
+	/** Row factory used by all three list views. */
 	TSharedRef<ITableRow> GenerateStackRow(
 		TSharedPtr<FGeneratorStackItem> Item,
 		const TSharedRef<STableViewBase>& OwnerTable);
 
+	/** Shared selection handler — updates DetailsView and tracks ActiveItems. */
 	void OnStackSelectionChanged(
 		TSharedPtr<FGeneratorStackItem> Item,
-		ESelectInfo::Type SelectType);
+		ESelectInfo::Type SelectType,
+		TArray<TSharedPtr<FGeneratorStackItem>>* OwnerArray);
 
-	// Type-selector combo box
-	void OnAddTypeChanged(
-		TSharedPtr<FGeneratorClassEntry> Item,
-		ESelectInfo::Type SelectType);
+	// ── Per-stage combo box helpers ───────────────────────────────────────────
+
+	void OnAddTypeChanged(TSharedPtr<FGeneratorClassEntry> Item, ESelectInfo::Type,
+		TSharedPtr<FGeneratorClassEntry>& OutSelected);
 
 	TSharedRef<SWidget> MakeClassEntryRow(TSharedPtr<FGeneratorClassEntry> Item);
-	FText GetAddTypeText() const;
 
-	// Stack toolbar
-	FReply OnAddClicked();
-	FReply OnRemoveClicked();
-	FReply OnMoveUpClicked();
-	FReply OnMoveDownClicked();
+	FText GetAddTypeText(const TSharedPtr<FGeneratorClassEntry>& SelectedClass) const;
 
-	bool CanRemove() const;
-	bool CanMoveUp() const;
-	bool CanMoveDown() const;
+	// ── Per-stage Add / Remove ────────────────────────────────────────────────
 
-	// ── Bottom: shared reference sequence ───────────────────────────────────
+	FReply OnAddClicked(TArray<TSharedPtr<FGeneratorStackItem>>& TargetItems,
+		TSharedPtr<FGeneratorClassEntry>& SelectedClass,
+		TSharedPtr<SListView<TSharedPtr<FGeneratorStackItem>>>& ListView);
+
+	FReply OnRemoveClicked(TArray<TSharedPtr<FGeneratorStackItem>>& TargetItems,
+		TSharedPtr<SListView<TSharedPtr<FGeneratorStackItem>>>& ListView);
+
+	// ── Bottom: shared reference sequence ────────────────────────────────────
 
 	void OnReferenceSequenceSelected(const FAssetData& AssetData);
 	FString GetReferenceSequencePath() const;
 
-	// ── Config asset save / load ─────────────────────────────────────────────
+	// ── Config asset save / load ──────────────────────────────────────────────
 
 	FReply OnSaveConfigAssetClicked();
-	void OnLoadConfigAssetChanged(const FAssetData& AssetData);
+	void   OnLoadConfigAssetChanged(const FAssetData& AssetData);
 	FString GetConfigAssetPath() const;
 
-	// ── Batch processor fill toggle ──────────────────────────────────────────
+	// ── Batch processor fill toggle ───────────────────────────────────────────
 
 	ECheckBoxState GetBatchProcessorFillState() const;
-	void OnBatchProcessorFillChanged(ECheckBoxState NewState);
-	bool IsRefSlotEnabled() const;
+	void           OnBatchProcessorFillChanged(ECheckBoxState NewState);
+	bool           IsRefSlotEnabled() const;
 
-	// ── Action buttons ───────────────────────────────────────────────────────
+	// ── Action buttons ────────────────────────────────────────────────────────
 
 	FReply OnGenerateClicked();
 	FReply OnClearAllClicked();
@@ -120,29 +136,54 @@ private:
 	bool  CanGenerate() const;
 	FText GetGenerateTooltip() const;
 
-	// ── Helpers ──────────────────────────────────────────────────────────────
+	// ── Internal helpers ──────────────────────────────────────────────────────
 
 	void PopulateAvailableClasses();
 	UCDGTrajectoryGenerator* CreateGeneratorInstance(UClass* InClass);
 
-	// ── State ────────────────────────────────────────────────────────────────
+	/** Serialize one stage's items to a JSON array. */
+	TArray<TSharedPtr<FJsonValue>> SerializeStageItems(
+		const TArray<TSharedPtr<FGeneratorStackItem>>& Items) const;
 
-	TArray<TSharedPtr<FGeneratorStackItem>>                  GeneratorItems;
-	TSharedPtr<SListView<TSharedPtr<FGeneratorStackItem>>>   GeneratorListView;
-	TSharedPtr<FGeneratorStackItem>                          SelectedItem;
+	/** Deserialize one stage's JSON array into generator instances. */
+	void DeserializeStageItems(
+		const TArray<TSharedPtr<FJsonValue>>& Array,
+		TArray<TSharedPtr<FGeneratorStackItem>>& OutItems,
+		TSharedPtr<SListView<TSharedPtr<FGeneratorStackItem>>>& ListView);
 
-	TSharedPtr<IDetailsView>                                 DetailsView;
+	/** Release all GC-roots for a stage's items and clear the array. */
+	void ClearStageItems(TArray<TSharedPtr<FGeneratorStackItem>>& Items);
 
-	TArray<TSharedPtr<FGeneratorClassEntry>>                 AvailableClasses;
-	TSharedPtr<FGeneratorClassEntry>                         SelectedAddClass;
+	// ── State: Positioning stack ──────────────────────────────────────────────
 
-	TWeakObjectPtr<ULevelSequence>                           SharedReferenceSequence;
+	TArray<TSharedPtr<FGeneratorStackItem>>                 PositionItems;
+	TSharedPtr<SListView<TSharedPtr<FGeneratorStackItem>>>  PositionListView;
+	TArray<TSharedPtr<FGeneratorClassEntry>>                PositionClasses;
+	TSharedPtr<FGeneratorClassEntry>                        SelectedPositionClass;
 
-	// Currently loaded generator stack config asset (used for save-in-place)
-	TWeakObjectPtr<UGeneratorStackConfig>                   LoadedConfigAsset;
+	// ── State: Movement stack ─────────────────────────────────────────────────
 
-	// Whether the batch processor should fill reference sequence and actor slots
-	bool                                                    bLetBatchProcessorFill = false;
+	TArray<TSharedPtr<FGeneratorStackItem>>                 MovementItems;
+	TSharedPtr<SListView<TSharedPtr<FGeneratorStackItem>>>  MovementListView;
+	TArray<TSharedPtr<FGeneratorClassEntry>>                MovementClasses;
+	TSharedPtr<FGeneratorClassEntry>                        SelectedMovementClass;
+
+	// ── State: Effects stack ──────────────────────────────────────────────────
+
+	TArray<TSharedPtr<FGeneratorStackItem>>                 EffectsItems;
+	TSharedPtr<SListView<TSharedPtr<FGeneratorStackItem>>>  EffectsListView;
+	TArray<TSharedPtr<FGeneratorClassEntry>>                EffectsClasses;
+	TSharedPtr<FGeneratorClassEntry>                        SelectedEffectsClass;
+
+	// ── State: shared ─────────────────────────────────────────────────────────
+
+	/** The generator currently shown in the details view (from any stack). */
+	TSharedPtr<FGeneratorStackItem>         SelectedItem;
+
+	TSharedPtr<IDetailsView>                DetailsView;
+	TWeakObjectPtr<ULevelSequence>          SharedReferenceSequence;
+	TWeakObjectPtr<UGeneratorStackConfig>   LoadedConfigAsset;
+	bool                                    bLetBatchProcessorFill = false;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

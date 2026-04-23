@@ -5,6 +5,9 @@
 #include "Config/GeneratorStackConfigFactory.h"
 
 #include "Generator/CDGTrajectoryGenerator.h"
+#include "Generator/CDGPositioningGenerator.h"
+#include "Generator/CDGMovementGenerator.h"
+#include "Generator/CDGEffectsGenerator.h"
 #include "Trajectory/CDGKeyframe.h"
 #include "Trajectory/CDGTrajectory.h"
 #include "Trajectory/CDGTrajectorySubsystem.h"
@@ -22,10 +25,9 @@
 #include "PropertyCustomizationHelpers.h"
 #include "Styling/AppStyle.h"
 
-// Property editor (details panel)
+// Property editor
 #include "IDetailsView.h"
 #include "PropertyEditorModule.h"
-#include "PropertyHandle.h"
 #include "Modules/ModuleManager.h"
 
 // Editor
@@ -56,14 +58,42 @@
 #define LOCTEXT_NAMESPACE "CDGGeneratorEditor"
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SGeneratorEditorWindow — Construct
+// Internal helper
+// ─────────────────────────────────────────────────────────────────────────────
+
+namespace
+{
+	/** Serialize a stage's items to a JSON array value array. */
+	TArray<TSharedPtr<FJsonValue>> SerializeItems(
+		const TArray<TSharedPtr<FGeneratorStackItem>>& Items)
+	{
+		TArray<TSharedPtr<FJsonValue>> Array;
+		for (const TSharedPtr<FGeneratorStackItem>& Item : Items)
+		{
+			UCDGTrajectoryGenerator* Gen = Item ? Item->Generator : nullptr;
+			if (!Gen) continue;
+
+			TSharedRef<FJsonObject> GenObj = MakeShared<FJsonObject>();
+			GenObj->SetStringField(TEXT("class"), Gen->GetClass()->GetPathName());
+
+			TSharedPtr<FJsonObject> ConfigObj = MakeShared<FJsonObject>();
+			Gen->SerializeGeneratorConfig(ConfigObj);
+			GenObj->SetObjectField(TEXT("config"), ConfigObj);
+
+			Array.Add(MakeShared<FJsonValueObject>(GenObj));
+		}
+		return Array;
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Construct
 // ─────────────────────────────────────────────────────────────────────────────
 
 void SGeneratorEditorWindow::Construct(const FArguments& InArgs)
 {
 	PopulateAvailableClasses();
 
-	// Build a standalone IDetailsView for the right panel
 	FPropertyEditorModule& PropEdModule =
 		FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
 
@@ -75,25 +105,21 @@ void SGeneratorEditorWindow::Construct(const FArguments& InArgs)
 	DetailsArgs.bHideSelectionTip     = true;
 	DetailsView = PropEdModule.CreateDetailView(DetailsArgs);
 
-	// Hide base-class properties managed by the shared bottom panel so the details
-	// view only shows generator-specific configuration.
 	DetailsView->SetIsPropertyVisibleDelegate(FIsPropertyVisible::CreateLambda(
-		[](const FPropertyAndParent& PropertyAndParent) -> bool
+		[](const FPropertyAndParent& PAP) -> bool
 		{
 			static const FName ReferenceSequenceName =
 				GET_MEMBER_NAME_CHECKED(UCDGTrajectoryGenerator, ReferenceSequence);
-			return PropertyAndParent.Property.GetFName() != ReferenceSequenceName;
+			return PAP.Property.GetFName() != ReferenceSequenceName;
 		}));
 
-	// When "Let Batch Processor Fill" is active, make only PrimaryCharacterActor
-	// read-only — all other generator properties remain fully editable.
 	DetailsView->SetIsPropertyReadOnlyDelegate(FIsPropertyReadOnly::CreateLambda(
-		[this](const FPropertyAndParent& PropertyAndParent) -> bool
+		[this](const FPropertyAndParent& PAP) -> bool
 		{
 			if (!bLetBatchProcessorFill) return false;
 			static const FName PrimaryCharacterActorName =
-				GET_MEMBER_NAME_CHECKED(UCDGTrajectoryGenerator, PrimaryCharacterActor);
-			return PropertyAndParent.Property.GetFName() == PrimaryCharacterActorName;
+				GET_MEMBER_NAME_CHECKED(UCDGPositioningGenerator, PrimaryCharacterActor);
+			return PAP.Property.GetFName() == PrimaryCharacterActorName;
 		}));
 
 	DetailsView->SetObject(nullptr);
@@ -106,154 +132,70 @@ void SGeneratorEditorWindow::Construct(const FArguments& InArgs)
 		[
 			SNew(SVerticalBox)
 
-			// ── Main content splitter ─────────────────────────────────────────
+			// ── Three stage stacks (top) ──────────────────────────────────────
 			+ SVerticalBox::Slot()
-			.FillHeight(1.f)
+			.FillHeight(0.45f)
 			[
 				SNew(SSplitter)
 				.Orientation(Orient_Horizontal)
 
-				// ── LEFT: Generator Stack ─────────────────────────────────────
 				+ SSplitter::Slot()
-				.Value(0.35f)
+				.Value(0.333f)
 				[
-					SNew(SBorder)
-					.BorderImage(FAppStyle::GetBrush("ToolPanel.DarkGroupBorder"))
-					.Padding(FMargin(6.f))
-					[
-						SNew(SVerticalBox)
-
-						// Title
-						+ SVerticalBox::Slot()
-						.AutoHeight()
-						.Padding(0.f, 0.f, 0.f, 6.f)
-						[
-							SNew(STextBlock)
-							.Text(LOCTEXT("StackTitle", "Generator Stack"))
-							.Font(FAppStyle::GetFontStyle("HeadingExtraSmall"))
-						]
-
-						// Type picker + Add button
-						+ SVerticalBox::Slot()
-						.AutoHeight()
-						.Padding(0.f, 0.f, 0.f, 4.f)
-						[
-							SNew(SHorizontalBox)
-
-							+ SHorizontalBox::Slot()
-							.FillWidth(1.f)
-							[
-								SNew(SComboBox<TSharedPtr<FGeneratorClassEntry>>)
-								.OptionsSource(&AvailableClasses)
-								.OnSelectionChanged(this, &SGeneratorEditorWindow::OnAddTypeChanged)
-								.OnGenerateWidget(this, &SGeneratorEditorWindow::MakeClassEntryRow)
-								.InitiallySelectedItem(AvailableClasses.Num() > 0 ? AvailableClasses[0] : nullptr)
-								[
-									SNew(STextBlock)
-									.Text(this, &SGeneratorEditorWindow::GetAddTypeText)
-								]
-							]
-
-							+ SHorizontalBox::Slot()
-							.AutoWidth()
-							.Padding(4.f, 0.f, 0.f, 0.f)
-							[
-								SNew(SButton)
-								.Text(LOCTEXT("AddBtn", "Add"))
-								.ToolTipText(LOCTEXT("AddBtnTip", "Add the selected generator type to the stack"))
-								.OnClicked(this, &SGeneratorEditorWindow::OnAddClicked)
-								.IsEnabled_Lambda([this]()
-								{
-									return AvailableClasses.Num() > 0 && SelectedAddClass.IsValid();
-								})
-							]
-						]
-
-						// Generator list
-						+ SVerticalBox::Slot()
-						.FillHeight(1.f)
-						[
-							SAssignNew(GeneratorListView, SListView<TSharedPtr<FGeneratorStackItem>>)
-							.ListItemsSource(&GeneratorItems)
-							.OnGenerateRow(this, &SGeneratorEditorWindow::GenerateStackRow)
-							.OnSelectionChanged(this, &SGeneratorEditorWindow::OnStackSelectionChanged)
-							.SelectionMode(ESelectionMode::Single)
-						]
-
-						// Re-order / Remove controls
-						+ SVerticalBox::Slot()
-						.AutoHeight()
-						.Padding(0.f, 4.f, 0.f, 0.f)
-						[
-							SNew(SHorizontalBox)
-
-							+ SHorizontalBox::Slot()
-							.AutoWidth()
-							.Padding(0.f, 0.f, 4.f, 0.f)
-							[
-								SNew(SButton)
-								.Text(LOCTEXT("MoveUpBtn", "↑"))
-								.ToolTipText(LOCTEXT("MoveUpTip", "Move selected generator up"))
-								.OnClicked(this, &SGeneratorEditorWindow::OnMoveUpClicked)
-								.IsEnabled(this, &SGeneratorEditorWindow::CanMoveUp)
-							]
-
-							+ SHorizontalBox::Slot()
-							.AutoWidth()
-							.Padding(0.f, 0.f, 4.f, 0.f)
-							[
-								SNew(SButton)
-								.Text(LOCTEXT("MoveDownBtn", "↓"))
-								.ToolTipText(LOCTEXT("MoveDownTip", "Move selected generator down"))
-								.OnClicked(this, &SGeneratorEditorWindow::OnMoveDownClicked)
-								.IsEnabled(this, &SGeneratorEditorWindow::CanMoveDown)
-							]
-
-							+ SHorizontalBox::Slot()
-							.FillWidth(1.f)
-
-							+ SHorizontalBox::Slot()
-							.AutoWidth()
-							[
-								SNew(SButton)
-								.Text(LOCTEXT("RemoveBtn", "Remove"))
-								.ToolTipText(LOCTEXT("RemoveTip", "Remove the selected generator from the stack"))
-								.OnClicked(this, &SGeneratorEditorWindow::OnRemoveClicked)
-								.IsEnabled(this, &SGeneratorEditorWindow::CanRemove)
-							]
-						]
-					]
+					MakeStagePanel(
+						LOCTEXT("PositionStageTitle", "Positioning"),
+						PositionClasses, SelectedPositionClass,
+						PositionItems,   PositionListView)
 				]
 
-				// ── RIGHT: Generator Configuration (IDetailsView) ─────────────
 				+ SSplitter::Slot()
-				.Value(0.65f)
+				.Value(0.333f)
 				[
-					SNew(SBorder)
-					.BorderImage(FAppStyle::GetBrush("ToolPanel.DarkGroupBorder"))
-					.Padding(FMargin(6.f))
+					MakeStagePanel(
+						LOCTEXT("MovementStageTitle", "Movement"),
+						MovementClasses, SelectedMovementClass,
+						MovementItems,   MovementListView)
+				]
+
+				+ SSplitter::Slot()
+				.Value(0.334f)
+				[
+					MakeStagePanel(
+						LOCTEXT("EffectsStageTitle", "Effects"),
+						EffectsClasses, SelectedEffectsClass,
+						EffectsItems,   EffectsListView)
+				]
+			]
+
+			// ── Details view (middle) ─────────────────────────────────────────
+			+ SVerticalBox::Slot()
+			.FillHeight(0.55f)
+			.Padding(0.f, 6.f, 0.f, 0.f)
+			[
+				SNew(SBorder)
+				.BorderImage(FAppStyle::GetBrush("ToolPanel.DarkGroupBorder"))
+				.Padding(FMargin(6.f))
+				[
+					SNew(SVerticalBox)
+
+					+ SVerticalBox::Slot()
+					.AutoHeight()
+					.Padding(0.f, 0.f, 0.f, 4.f)
 					[
-						SNew(SVerticalBox)
+						SNew(STextBlock)
+						.Text(LOCTEXT("ConfigTitle", "Generator Configuration"))
+						.Font(FAppStyle::GetFontStyle("HeadingExtraSmall"))
+					]
 
-						+ SVerticalBox::Slot()
-						.AutoHeight()
-						.Padding(0.f, 0.f, 0.f, 6.f)
-						[
-							SNew(STextBlock)
-							.Text(LOCTEXT("ConfigTitle", "Generator Configuration"))
-							.Font(FAppStyle::GetFontStyle("HeadingExtraSmall"))
-						]
-
-						+ SVerticalBox::Slot()
-						.FillHeight(1.f)
-						[
-							DetailsView.ToSharedRef()
-						]
+					+ SVerticalBox::Slot()
+					.FillHeight(1.f)
+					[
+						DetailsView.ToSharedRef()
 					]
 				]
 			]
 
-			// ── Config Asset row ─────────────────────────────────────────────
+			// ── Config Asset row ──────────────────────────────────────────────
 			+ SVerticalBox::Slot()
 			.AutoHeight()
 			.Padding(0.f, 8.f, 0.f, 0.f)
@@ -269,7 +211,8 @@ void SGeneratorEditorWindow::Construct(const FArguments& InArgs)
 					.Text(LOCTEXT("ConfigAssetLabel", "Config Asset:"))
 					.MinDesiredWidth(130.f)
 					.ToolTipText(LOCTEXT("ConfigAssetTip",
-						"Select a saved generator stack config to load it, or leave empty to use current values."))
+						"Select a saved generator pipeline config to load it, "
+						"or leave empty to use current values."))
 				]
 
 				+ SHorizontalBox::Slot()
@@ -284,7 +227,7 @@ void SGeneratorEditorWindow::Construct(const FArguments& InArgs)
 					.DisplayUseSelected(true)
 					.DisplayBrowse(true)
 					.ToolTipText(LOCTEXT("ConfigAssetPickerTip",
-						"Selecting an asset immediately restores the generator stack and settings from it."))
+						"Selecting an asset immediately restores all three generator stacks."))
 				]
 
 				+ SHorizontalBox::Slot()
@@ -293,12 +236,12 @@ void SGeneratorEditorWindow::Construct(const FArguments& InArgs)
 					SNew(SButton)
 					.Text(LOCTEXT("SaveConfigAssetBtn", "Save Config"))
 					.ToolTipText(LOCTEXT("SaveConfigAssetTip",
-						"Save current generator stack to the selected config asset, or create a new one."))
+						"Save the current generator pipeline to the selected config asset."))
 					.OnClicked(this, &SGeneratorEditorWindow::OnSaveConfigAssetClicked)
 				]
 			]
 
-			// ── Separator ────────────────────────────────────────────────────
+			// ── Separator ─────────────────────────────────────────────────────
 			+ SVerticalBox::Slot()
 			.AutoHeight()
 			.Padding(0.f, 6.f)
@@ -308,10 +251,9 @@ void SGeneratorEditorWindow::Construct(const FArguments& InArgs)
 				.Padding(FMargin(0.f, 1.f))
 			]
 
-			// ── Shared Reference Sequence + Batch Fill toggle ─────────────────
+			// ── Reference Sequence + Batch Fill toggle ────────────────────────
 			+ SVerticalBox::Slot()
 			.AutoHeight()
-			.Padding(0.f, 0.f, 0.f, 0.f)
 			[
 				SNew(SHorizontalBox)
 
@@ -323,8 +265,8 @@ void SGeneratorEditorWindow::Construct(const FArguments& InArgs)
 					SNew(STextBlock)
 					.Text(LOCTEXT("RefSeqLabel", "Reference Sequence:"))
 					.ToolTipText(LOCTEXT("RefSeqTip",
-						"Level Sequence whose duration defines the generation timeline.\n"
-						"Propagated to every generator in the stack before Generate is run."))
+						"Level Sequence whose duration defines the generation timeline. "
+						"Propagated to every generator before Generate is run."))
 				]
 
 				+ SHorizontalBox::Slot()
@@ -350,8 +292,7 @@ void SGeneratorEditorWindow::Construct(const FArguments& InArgs)
 					.OnCheckStateChanged(this, &SGeneratorEditorWindow::OnBatchProcessorFillChanged)
 					.ToolTipText(LOCTEXT("BatchFillTip",
 						"When ticked, the reference sequence and actor fields are left empty — "
-						"the batch processor will inject them at runtime. "
-						"Generate is disabled; Export Config remains enabled."))
+						"the batch processor will inject them at runtime."))
 					[
 						SNew(STextBlock)
 						.Text(LOCTEXT("BatchFillLabel", "Let Batch Processor Fill"))
@@ -388,7 +329,6 @@ void SGeneratorEditorWindow::Construct(const FArguments& InArgs)
 					.OnClicked(this, &SGeneratorEditorWindow::OnClearAllClicked)
 				]
 
-				// Spacer
 				+ SHorizontalBox::Slot()
 				.FillWidth(1.f)
 
@@ -399,7 +339,7 @@ void SGeneratorEditorWindow::Construct(const FArguments& InArgs)
 					SNew(SButton)
 					.Text(LOCTEXT("ExportConfigBtn", "Export Config"))
 					.ToolTipText(LOCTEXT("ExportConfigTip",
-						"Save the current generator stack and all configurations to a JSON file"))
+						"Save the current generator pipeline to a JSON file"))
 					.OnClicked(this, &SGeneratorEditorWindow::OnExportConfigClicked)
 				]
 
@@ -410,7 +350,7 @@ void SGeneratorEditorWindow::Construct(const FArguments& InArgs)
 					SNew(SButton)
 					.Text(LOCTEXT("LoadConfigBtn", "Load Config"))
 					.ToolTipText(LOCTEXT("LoadConfigTip",
-						"Restore a generator stack from a previously exported JSON config file"))
+						"Restore a generator pipeline from a previously exported JSON file"))
 					.OnClicked(this, &SGeneratorEditorWindow::OnLoadConfigClicked)
 				]
 
@@ -419,7 +359,6 @@ void SGeneratorEditorWindow::Construct(const FArguments& InArgs)
 				[
 					SNew(SButton)
 					.Text(LOCTEXT("CloseBtn", "Close"))
-					.ToolTipText(LOCTEXT("CloseBtnTip", "Close this window"))
 					.OnClicked(this, &SGeneratorEditorWindow::OnCloseClicked)
 				]
 			]
@@ -429,14 +368,140 @@ void SGeneratorEditorWindow::Construct(const FArguments& InArgs)
 
 SGeneratorEditorWindow::~SGeneratorEditorWindow()
 {
-	// Allow all transient generator instances to be garbage collected
-	for (const TSharedPtr<FGeneratorStackItem>& Item : GeneratorItems)
-	{
-		if (Item && Item->Generator && Item->Generator->IsRooted())
-		{
-			Item->Generator->RemoveFromRoot();
-		}
-	}
+	ClearStageItems(PositionItems);
+	ClearStageItems(MovementItems);
+	ClearStageItems(EffectsItems);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MakeStagePanel
+// ─────────────────────────────────────────────────────────────────────────────
+
+TSharedRef<SWidget> SGeneratorEditorWindow::MakeStagePanel(
+	const FText& StageTitle,
+	TArray<TSharedPtr<FGeneratorClassEntry>>&                   InAvailableClasses,
+	TSharedPtr<FGeneratorClassEntry>&                           InSelectedAddClass,
+	TArray<TSharedPtr<FGeneratorStackItem>>&                    InItems,
+	TSharedPtr<SListView<TSharedPtr<FGeneratorStackItem>>>&     OutListView)
+{
+	// Capture raw pointers to the member variables so lambdas remain valid
+	// after this stack frame returns (the pointed-to objects are members of this).
+	TArray<TSharedPtr<FGeneratorClassEntry>>*                      AvailPtr    = &InAvailableClasses;
+	TSharedPtr<FGeneratorClassEntry>*                              SelClassPtr = &InSelectedAddClass;
+	TArray<TSharedPtr<FGeneratorStackItem>>*                       ItemsPtr    = &InItems;
+	TSharedPtr<SListView<TSharedPtr<FGeneratorStackItem>>>*        ListViewPtr = &OutListView;
+
+	return SNew(SBorder)
+		.BorderImage(FAppStyle::GetBrush("ToolPanel.DarkGroupBorder"))
+		.Padding(FMargin(6.f))
+		[
+			SNew(SVerticalBox)
+
+			// Title
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0.f, 0.f, 0.f, 6.f)
+			[
+				SNew(STextBlock)
+				.Text(StageTitle)
+				.Font(FAppStyle::GetFontStyle("HeadingExtraSmall"))
+			]
+
+			// Type combo + Add
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0.f, 0.f, 0.f, 4.f)
+			[
+				SNew(SHorizontalBox)
+
+				+ SHorizontalBox::Slot()
+				.FillWidth(1.f)
+				[
+					SNew(SComboBox<TSharedPtr<FGeneratorClassEntry>>)
+					.OptionsSource(AvailPtr)
+					.OnSelectionChanged_Lambda(
+						[this, SelClassPtr]
+						(TSharedPtr<FGeneratorClassEntry> Item, ESelectInfo::Type SelectType)
+						{
+							OnAddTypeChanged(Item, SelectType, *SelClassPtr);
+						})
+					.OnGenerateWidget(this, &SGeneratorEditorWindow::MakeClassEntryRow)
+					.InitiallySelectedItem(
+						InAvailableClasses.Num() > 0 ? InAvailableClasses[0] : nullptr)
+					[
+						SNew(STextBlock)
+						.Text_Lambda([this, SelClassPtr]()
+						{
+							return GetAddTypeText(*SelClassPtr);
+						})
+					]
+				]
+
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.Padding(4.f, 0.f, 0.f, 0.f)
+				[
+					SNew(SButton)
+					.Text(LOCTEXT("AddBtn", "Add"))
+					.ToolTipText(LOCTEXT("AddBtnTip",
+						"Add the selected generator type to this stage"))
+					.OnClicked_Lambda(
+						[this, ItemsPtr, SelClassPtr, ListViewPtr]()
+						{
+							return OnAddClicked(*ItemsPtr, *SelClassPtr, *ListViewPtr);
+						})
+					.IsEnabled_Lambda([AvailPtr, SelClassPtr]()
+					{
+						return AvailPtr->Num() > 0 && SelClassPtr->IsValid();
+					})
+				]
+			]
+
+			// List
+			+ SVerticalBox::Slot()
+			.FillHeight(1.f)
+			[
+				SAssignNew(*ListViewPtr, SListView<TSharedPtr<FGeneratorStackItem>>)
+				.ListItemsSource(ItemsPtr)
+				.OnGenerateRow(this, &SGeneratorEditorWindow::GenerateStackRow)
+				.OnSelectionChanged_Lambda(
+					[this, ItemsPtr]
+					(TSharedPtr<FGeneratorStackItem> Item, ESelectInfo::Type SelectType)
+					{
+						OnStackSelectionChanged(Item, SelectType, ItemsPtr);
+					})
+				.SelectionMode(ESelectionMode::Single)
+			]
+
+			// Remove
+			+ SVerticalBox::Slot()
+			.AutoHeight()
+			.Padding(0.f, 4.f, 0.f, 0.f)
+			[
+				SNew(SHorizontalBox)
+
+				+ SHorizontalBox::Slot()
+				.FillWidth(1.f)
+
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				[
+					SNew(SButton)
+					.Text(LOCTEXT("RemoveBtn", "Remove"))
+					.ToolTipText(LOCTEXT("RemoveTip", "Remove the selected generator"))
+					.OnClicked_Lambda(
+						[this, ItemsPtr, ListViewPtr]()
+						{
+							return OnRemoveClicked(*ItemsPtr, *ListViewPtr);
+						})
+					.IsEnabled_Lambda([this, ItemsPtr]()
+					{
+						return SelectedItem.IsValid()
+							&& ItemsPtr->Contains(SelectedItem);
+					})
+				]
+			]
+		];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -445,17 +510,18 @@ SGeneratorEditorWindow::~SGeneratorEditorWindow()
 
 void SGeneratorEditorWindow::PopulateAvailableClasses()
 {
-	AvailableClasses.Empty();
+	PositionClasses.Empty();
+	MovementClasses.Empty();
+	EffectsClasses.Empty();
 
 	TArray<UClass*> DerivedClasses;
-	GetDerivedClasses(UCDGTrajectoryGenerator::StaticClass(), DerivedClasses, /*bRecursive=*/true);
+	GetDerivedClasses(UCDGTrajectoryGenerator::StaticClass(), DerivedClasses, true);
 
 	for (UClass* Class : DerivedClasses)
 	{
 		if (!Class) continue;
 		if (Class->HasAnyClassFlags(CLASS_Abstract | CLASS_Deprecated | CLASS_NewerVersionExists)) continue;
 
-		// Use the generator's self-reported name as display name when available
 		FText DisplayName = FText::FromString(Class->GetName());
 		if (UCDGTrajectoryGenerator* CDO = Class->GetDefaultObject<UCDGTrajectoryGenerator>())
 		{
@@ -464,12 +530,29 @@ void SGeneratorEditorWindow::PopulateAvailableClasses()
 			{
 				DisplayName = FText::FromName(GenName);
 			}
-		}
 
-		AvailableClasses.Add(MakeShared<FGeneratorClassEntry>(Class, DisplayName));
+			const EGeneratorStage Stage = CDO->GetGeneratorStage();
+			TSharedPtr<FGeneratorClassEntry> Entry =
+				MakeShared<FGeneratorClassEntry>(Class, DisplayName);
+
+			switch (Stage)
+			{
+			case EGeneratorStage::Positioning:
+				PositionClasses.Add(Entry);
+				break;
+			case EGeneratorStage::Movement:
+				MovementClasses.Add(Entry);
+				break;
+			case EGeneratorStage::Effects:
+				EffectsClasses.Add(Entry);
+				break;
+			}
+		}
 	}
 
-	SelectedAddClass = AvailableClasses.Num() > 0 ? AvailableClasses[0] : nullptr;
+	SelectedPositionClass = PositionClasses.Num() > 0 ? PositionClasses[0] : nullptr;
+	SelectedMovementClass = MovementClasses.Num() > 0 ? MovementClasses[0] : nullptr;
+	SelectedEffectsClass  = EffectsClasses.Num()  > 0 ? EffectsClasses[0]  : nullptr;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -480,7 +563,6 @@ UCDGTrajectoryGenerator* SGeneratorEditorWindow::CreateGeneratorInstance(UClass*
 {
 	if (!InClass) return nullptr;
 
-	// Use the current editor world as outer so GetWorld() resolves correctly inside Generate()
 	UObject* Outer = GetTransientPackage();
 	if (GEditor)
 	{
@@ -493,13 +575,13 @@ UCDGTrajectoryGenerator* SGeneratorEditorWindow::CreateGeneratorInstance(UClass*
 	UCDGTrajectoryGenerator* Gen = NewObject<UCDGTrajectoryGenerator>(Outer, InClass);
 	if (Gen)
 	{
-		Gen->AddToRoot(); // Prevent GC while the editor window is open
+		Gen->AddToRoot();
 	}
 	return Gen;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Left panel — list row generation
+// GenerateStackRow
 // ─────────────────────────────────────────────────────────────────────────────
 
 TSharedRef<ITableRow> SGeneratorEditorWindow::GenerateStackRow(
@@ -509,10 +591,8 @@ TSharedRef<ITableRow> SGeneratorEditorWindow::GenerateStackRow(
 	FText RowText = LOCTEXT("UnknownGen", "(Unknown)");
 	if (Item && Item->Generator)
 	{
-		const int32 Idx = GeneratorItems.IndexOfByKey(Item);
 		const FName GenName = Item->Generator->GetGeneratorName();
-		RowText = FText::FromString(
-			FString::Printf(TEXT("%d.  %s"), Idx + 1, *GenName.ToString()));
+		RowText = FText::FromName(GenName.IsNone() ? FName("(unnamed)") : GenName);
 	}
 
 	return SNew(STableRow<TSharedPtr<FGeneratorStackItem>>, OwnerTable)
@@ -523,146 +603,138 @@ TSharedRef<ITableRow> SGeneratorEditorWindow::GenerateStackRow(
 		];
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// OnStackSelectionChanged
+// ─────────────────────────────────────────────────────────────────────────────
+
 void SGeneratorEditorWindow::OnStackSelectionChanged(
 	TSharedPtr<FGeneratorStackItem> Item,
-	ESelectInfo::Type /*SelectType*/)
+	ESelectInfo::Type /*SelectType*/,
+	TArray<TSharedPtr<FGeneratorStackItem>>* OwnerArray)
 {
+	if (!Item.IsValid()) return;
+
 	SelectedItem = Item;
+
+	// Clear selection in the other two lists
+	auto ClearOther = [&](
+		TArray<TSharedPtr<FGeneratorStackItem>>* OtherArray,
+		TSharedPtr<SListView<TSharedPtr<FGeneratorStackItem>>> OtherListView)
+	{
+		if (OtherArray != OwnerArray && OtherListView.IsValid())
+		{
+			OtherListView->ClearSelection();
+		}
+	};
+
+	ClearOther(&PositionItems, PositionListView);
+	ClearOther(&MovementItems, MovementListView);
+	ClearOther(&EffectsItems,  EffectsListView);
+
 	if (DetailsView.IsValid())
 	{
-		DetailsView->SetObject(Item.IsValid() ? Item->Generator : nullptr);
+		DetailsView->SetObject(Item->Generator);
 	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Type combo box
+// Combo-box helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
 void SGeneratorEditorWindow::OnAddTypeChanged(
 	TSharedPtr<FGeneratorClassEntry> Item,
-	ESelectInfo::Type /*SelectType*/)
+	ESelectInfo::Type /*SelectType*/,
+	TSharedPtr<FGeneratorClassEntry>& OutSelected)
 {
-	SelectedAddClass = Item;
+	OutSelected = Item;
 }
 
-TSharedRef<SWidget> SGeneratorEditorWindow::MakeClassEntryRow(TSharedPtr<FGeneratorClassEntry> Item)
+TSharedRef<SWidget> SGeneratorEditorWindow::MakeClassEntryRow(
+	TSharedPtr<FGeneratorClassEntry> Item)
 {
 	return SNew(STextBlock)
 		.Text(Item.IsValid() ? Item->DisplayName : LOCTEXT("NoneClass", "(None)"))
 		.Margin(FMargin(4.f, 2.f));
 }
 
-FText SGeneratorEditorWindow::GetAddTypeText() const
+FText SGeneratorEditorWindow::GetAddTypeText(
+	const TSharedPtr<FGeneratorClassEntry>& SelectedClass) const
 {
-	return SelectedAddClass.IsValid()
-		? SelectedAddClass->DisplayName
+	return SelectedClass.IsValid()
+		? SelectedClass->DisplayName
 		: LOCTEXT("SelectType", "Select type...");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Stack toolbar — Add / Remove / Move
+// Add / Remove
 // ─────────────────────────────────────────────────────────────────────────────
 
-FReply SGeneratorEditorWindow::OnAddClicked()
+FReply SGeneratorEditorWindow::OnAddClicked(
+	TArray<TSharedPtr<FGeneratorStackItem>>& TargetItems,
+	TSharedPtr<FGeneratorClassEntry>& SelectedClass,
+	TSharedPtr<SListView<TSharedPtr<FGeneratorStackItem>>>& ListView)
 {
-	if (!SelectedAddClass.IsValid() || !SelectedAddClass->Class)
-	{
-		return FReply::Handled();
-	}
+	if (!SelectedClass.IsValid() || !SelectedClass->Class) return FReply::Handled();
 
-	UCDGTrajectoryGenerator* NewGen = CreateGeneratorInstance(SelectedAddClass->Class);
+	UCDGTrajectoryGenerator* NewGen = CreateGeneratorInstance(SelectedClass->Class);
 	if (!NewGen) return FReply::Handled();
 
-	// Propagate the shared reference sequence to the newly created generator
 	if (SharedReferenceSequence.IsValid())
 	{
 		NewGen->ReferenceSequence = SharedReferenceSequence.Get();
 	}
 
 	TSharedPtr<FGeneratorStackItem> NewItem = MakeShared<FGeneratorStackItem>(NewGen);
-	GeneratorItems.Add(NewItem);
-	GeneratorListView->RequestListRefresh();
-
-	// Auto-select the newly added generator
-	GeneratorListView->SetSelection(NewItem);
+	TargetItems.Add(NewItem);
+	ListView->RequestListRefresh();
+	ListView->SetSelection(NewItem);
 
 	return FReply::Handled();
 }
 
-FReply SGeneratorEditorWindow::OnRemoveClicked()
+FReply SGeneratorEditorWindow::OnRemoveClicked(
+	TArray<TSharedPtr<FGeneratorStackItem>>& TargetItems,
+	TSharedPtr<SListView<TSharedPtr<FGeneratorStackItem>>>& ListView)
 {
 	if (!SelectedItem.IsValid()) return FReply::Handled();
+	if (!TargetItems.Contains(SelectedItem)) return FReply::Handled();
 
 	if (SelectedItem->Generator && SelectedItem->Generator->IsRooted())
 	{
 		SelectedItem->Generator->RemoveFromRoot();
 	}
 
-	GeneratorItems.Remove(SelectedItem);
+	TargetItems.Remove(SelectedItem);
 	SelectedItem.Reset();
 
-	if (DetailsView.IsValid())
-	{
-		DetailsView->SetObject(nullptr);
-	}
+	if (DetailsView.IsValid()) DetailsView->SetObject(nullptr);
+	ListView->RequestListRefresh();
 
-	GeneratorListView->RequestListRefresh();
 	return FReply::Handled();
-}
-
-FReply SGeneratorEditorWindow::OnMoveUpClicked()
-{
-	if (!CanMoveUp()) return FReply::Handled();
-	const int32 Idx = GeneratorItems.IndexOfByKey(SelectedItem);
-	GeneratorItems.Swap(Idx, Idx - 1);
-	GeneratorListView->RequestListRefresh();
-	return FReply::Handled();
-}
-
-FReply SGeneratorEditorWindow::OnMoveDownClicked()
-{
-	if (!CanMoveDown()) return FReply::Handled();
-	const int32 Idx = GeneratorItems.IndexOfByKey(SelectedItem);
-	GeneratorItems.Swap(Idx, Idx + 1);
-	GeneratorListView->RequestListRefresh();
-	return FReply::Handled();
-}
-
-bool SGeneratorEditorWindow::CanRemove() const
-{
-	return SelectedItem.IsValid();
-}
-
-bool SGeneratorEditorWindow::CanMoveUp() const
-{
-	if (!SelectedItem.IsValid()) return false;
-	const int32 Idx = GeneratorItems.IndexOfByKey(SelectedItem);
-	return Idx > 0;
-}
-
-bool SGeneratorEditorWindow::CanMoveDown() const
-{
-	if (!SelectedItem.IsValid()) return false;
-	const int32 Idx = GeneratorItems.IndexOfByKey(SelectedItem);
-	return Idx >= 0 && Idx < GeneratorItems.Num() - 1;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Reference Sequence picker
+// Reference Sequence
 // ─────────────────────────────────────────────────────────────────────────────
 
 void SGeneratorEditorWindow::OnReferenceSequenceSelected(const FAssetData& AssetData)
 {
 	SharedReferenceSequence = Cast<ULevelSequence>(AssetData.GetAsset());
 
-	// Propagate immediately to all generators already in the stack
-	for (const TSharedPtr<FGeneratorStackItem>& Item : GeneratorItems)
+	auto PropagateToStage = [this](TArray<TSharedPtr<FGeneratorStackItem>>& Items)
 	{
-		if (Item && Item->Generator)
+		for (const TSharedPtr<FGeneratorStackItem>& Item : Items)
 		{
-			Item->Generator->ReferenceSequence = SharedReferenceSequence.Get();
+			if (Item && Item->Generator)
+			{
+				Item->Generator->ReferenceSequence = SharedReferenceSequence.Get();
+			}
 		}
-	}
+	};
+
+	PropagateToStage(PositionItems);
+	PropagateToStage(MovementItems);
+	PropagateToStage(EffectsItems);
 }
 
 FString SGeneratorEditorWindow::GetReferenceSequencePath() const
@@ -681,42 +753,108 @@ FReply SGeneratorEditorWindow::OnGenerateClicked()
 	UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
 	if (!World)
 	{
-		UE_LOG(LogCameraDatasetGenEditor, Error, TEXT("[GeneratorEditor] No editor world available"));
+		UE_LOG(LogCameraDatasetGenEditor, Error,
+			TEXT("[GeneratorEditor] No editor world available"));
 		return FReply::Handled();
 	}
 
-	int32 TotalCreated = 0;
-
-	for (const TSharedPtr<FGeneratorStackItem>& Item : GeneratorItems)
+	// Helper: ensure generator is outered to the current world
+	auto PrepareGen = [World](UCDGTrajectoryGenerator* Gen,
+		ULevelSequence* RefSeq) -> UCDGTrajectoryGenerator*
 	{
-		UCDGTrajectoryGenerator* Gen = Item ? Item->Generator : nullptr;
-		if (!Gen) continue;
-
-		// Always push the shared reference sequence (overrides per-generator value)
-		if (SharedReferenceSequence.IsValid())
-		{
-			Gen->ReferenceSequence = SharedReferenceSequence.Get();
-		}
-
-		// Re-outer to the current editor world so GetWorld() resolves inside Generate()
+		if (!Gen) return nullptr;
+		if (RefSeq) Gen->ReferenceSequence = RefSeq;
 		if (Gen->GetOuter() != World)
 		{
-			Gen->Rename(
-				nullptr, World,
+			Gen->Rename(nullptr, World,
 				REN_DoNotDirty | REN_DontCreateRedirectors | REN_NonTransactional);
 		}
+		return Gen;
+	};
 
-		const TArray<ACDGTrajectory*> Created = Gen->Generate();
-		TotalCreated += Created.Num();
+	ULevelSequence* RefSeq = SharedReferenceSequence.Get();
+
+	// ── Cartesian product: every (positioning × movement) pair runs independently.
+	// Each positioning generator produces its own placement set; each movement
+	// generator consumes that set separately, so total trajectories =
+	//   sum_i(placements_i)  ×  |MovementStack|
+	// All resulting trajectories are then forwarded to every effects generator
+	// in sequence (effects chain, not multiply).
+	TArray<ACDGTrajectory*> AllTrajectories;
+
+	for (const TSharedPtr<FGeneratorStackItem>& PosItem : PositionItems)
+	{
+		UCDGPositioningGenerator* PosGen =
+			Cast<UCDGPositioningGenerator>(PrepareGen(PosItem ? PosItem->Generator : nullptr, RefSeq));
+		if (!PosGen) continue;
+
+		const TArray<FCDGCameraPlacement> Placements = PosGen->GeneratePlacements();
 
 		UE_LOG(LogCameraDatasetGenEditor, Log,
-			TEXT("[GeneratorEditor] %s created %d trajectory/ies"),
-			*Gen->GetGeneratorName().ToString(), Created.Num());
+			TEXT("[GeneratorEditor] %s produced %d placement(s)"),
+			*PosGen->GetGeneratorName().ToString(), Placements.Num());
+
+		if (Placements.IsEmpty()) continue;
+
+		for (const TSharedPtr<FGeneratorStackItem>& MovItem : MovementItems)
+		{
+			UCDGMovementGenerator* MovGen =
+				Cast<UCDGMovementGenerator>(PrepareGen(MovItem ? MovItem->Generator : nullptr, RefSeq));
+			if (!MovGen) continue;
+
+			// Propagate subject context from the paired positioning generator
+			MovGen->PrimaryCharacterActor = PosGen->PrimaryCharacterActor;
+			MovGen->FocusedAnchor         = PosGen->FocusedAnchor;
+
+			TArray<ACDGTrajectory*> Created = MovGen->GenerateMovement(Placements);
+			AllTrajectories.Append(Created);
+
+			UE_LOG(LogCameraDatasetGenEditor, Log,
+				TEXT("[GeneratorEditor] %s × %s → %d trajectory/ies"),
+				*PosGen->GetGeneratorName().ToString(),
+				*MovGen->GetGeneratorName().ToString(),
+				Created.Num());
+		}
+	}
+
+	// Collect subject context from the first valid positioning generator so that
+	// Effects generators (which have their Subject category hidden in the UI) get
+	// their PrimaryCharacterActor / FocusedAnchor populated before ApplyEffects.
+	UCDGPositioningGenerator* FirstPosGen = nullptr;
+	for (const TSharedPtr<FGeneratorStackItem>& PosItem : PositionItems)
+	{
+		if (PosItem && PosItem->Generator)
+		{
+			FirstPosGen = Cast<UCDGPositioningGenerator>(PosItem->Generator);
+			if (FirstPosGen) break;
+		}
+	}
+
+	// ── Effects: each generator in the stack is applied in sequence to the
+	// full combined trajectory set (effects chain, not multiply).
+	for (const TSharedPtr<FGeneratorStackItem>& FxItem : EffectsItems)
+	{
+		UCDGEffectsGenerator* FxGen =
+			Cast<UCDGEffectsGenerator>(PrepareGen(FxItem ? FxItem->Generator : nullptr, RefSeq));
+		if (!FxGen) continue;
+
+		// Propagate subject context from the first positioning generator
+		if (FirstPosGen)
+		{
+			FxGen->PrimaryCharacterActor = FirstPosGen->PrimaryCharacterActor;
+			FxGen->FocusedAnchor         = FirstPosGen->FocusedAnchor;
+		}
+
+		FxGen->ApplyEffects(AllTrajectories);
+
+		UE_LOG(LogCameraDatasetGenEditor, Log,
+			TEXT("[GeneratorEditor] %s applied effects to %d trajectory/ies"),
+			*FxGen->GetGeneratorName().ToString(), AllTrajectories.Num());
 	}
 
 	FNotificationInfo Info(FText::Format(
 		LOCTEXT("GenerateDoneNotif", "Generation complete — {0} trajectories created"),
-		FText::AsNumber(TotalCreated)));
+		FText::AsNumber(AllTrajectories.Num())));
 	Info.ExpireDuration      = 4.f;
 	Info.bUseLargeFont       = false;
 	Info.bUseSuccessFailIcons = true;
@@ -728,7 +866,7 @@ FReply SGeneratorEditorWindow::OnGenerateClicked()
 bool SGeneratorEditorWindow::CanGenerate() const
 {
 	if (bLetBatchProcessorFill) return false;
-	return GeneratorItems.Num() > 0;
+	return PositionItems.Num() > 0 && MovementItems.Num() > 0;
 }
 
 FText SGeneratorEditorWindow::GetGenerateTooltip() const
@@ -736,16 +874,23 @@ FText SGeneratorEditorWindow::GetGenerateTooltip() const
 	if (bLetBatchProcessorFill)
 	{
 		return LOCTEXT("GenerateTipBatchMode",
-			"Generate is disabled — 'Let Batch Processor Fill' is active. "
-			"Untick it to run generation manually.");
+			"Generate is disabled — 'Let Batch Processor Fill' is active.");
 	}
-	if (GeneratorItems.Num() == 0)
+	if (PositionItems.IsEmpty())
 	{
-		return LOCTEXT("GenerateTipEmpty",
-			"Add at least one generator to the stack before running");
+		return LOCTEXT("GenerateTipNoPos",
+			"Add at least one Positioning generator before running.");
+	}
+	if (MovementItems.IsEmpty())
+	{
+		return LOCTEXT("GenerateTipNoMov",
+			"Add at least one Movement generator before running.");
 	}
 	return LOCTEXT("GenerateTip",
-		"Run all generators in the stack sequentially and create trajectories in the current level");
+		"Run the full pipeline.\n"
+		"Each Positioning generator pairs with every Movement generator (cartesian product).\n"
+		"Total trajectories = N_positions × M_movement_generators.\n"
+		"Effects are then applied in sequence to all trajectories.");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -760,22 +905,17 @@ FReply SGeneratorEditorWindow::OnClearAllClicked()
 	UCDGTrajectorySubsystem* Subsystem = World->GetSubsystem<UCDGTrajectorySubsystem>();
 	if (!Subsystem) return FReply::Handled();
 
-	// Delete all trajectory actors via the subsystem
 	const TArray<FName> Names = Subsystem->GetTrajectoryNames();
 	for (const FName& Name : Names)
 	{
 		Subsystem->DeleteTrajectory(Name);
 	}
 
-	// Destroy any remaining keyframe actors (orphaned or not yet registered)
 	TArray<ACDGKeyframe*> Keyframes;
-	for (TActorIterator<ACDGKeyframe> It(World); It; ++It)
+	for (TActorIterator<ACDGKeyframe> It(World); It; ++It) Keyframes.Add(*It);
+	for (ACDGKeyframe* KF : Keyframes)
 	{
-		Keyframes.Add(*It);
-	}
-	for (ACDGKeyframe* Keyframe : Keyframes)
-	{
-		World->EditorDestroyActor(Keyframe, /*bShouldModifyLevel=*/true);
+		World->EditorDestroyActor(KF, true);
 	}
 
 	FNotificationInfo Info(FText::Format(
@@ -791,6 +931,69 @@ FReply SGeneratorEditorWindow::OnClearAllClicked()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Serialization helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+TArray<TSharedPtr<FJsonValue>> SGeneratorEditorWindow::SerializeStageItems(
+	const TArray<TSharedPtr<FGeneratorStackItem>>& Items) const
+{
+	return SerializeItems(Items);
+}
+
+void SGeneratorEditorWindow::DeserializeStageItems(
+	const TArray<TSharedPtr<FJsonValue>>& Array,
+	TArray<TSharedPtr<FGeneratorStackItem>>& OutItems,
+	TSharedPtr<SListView<TSharedPtr<FGeneratorStackItem>>>& ListView)
+{
+	for (const TSharedPtr<FJsonValue>& Val : Array)
+	{
+		const TSharedPtr<FJsonObject>* ObjPtr = nullptr;
+		if (!Val->TryGetObject(ObjPtr) || !ObjPtr) continue;
+
+		FString ClassName;
+		if (!(*ObjPtr)->TryGetStringField(TEXT("class"), ClassName)) continue;
+
+		UClass* Class = FindObject<UClass>(nullptr, *ClassName);
+		if (!Class)
+		{
+			UE_LOG(LogCameraDatasetGenEditor, Warning,
+				TEXT("[GeneratorEditor] Load: class not found: %s"), *ClassName);
+			continue;
+		}
+
+		UCDGTrajectoryGenerator* Gen = CreateGeneratorInstance(Class);
+		if (!Gen) continue;
+
+		const TSharedPtr<FJsonObject>* CfgPtr = nullptr;
+		if ((*ObjPtr)->TryGetObjectField(TEXT("config"), CfgPtr) && CfgPtr)
+		{
+			Gen->FetchGeneratorConfig(*CfgPtr);
+		}
+
+		if (SharedReferenceSequence.IsValid())
+		{
+			Gen->ReferenceSequence = SharedReferenceSequence.Get();
+		}
+
+		OutItems.Add(MakeShared<FGeneratorStackItem>(Gen));
+	}
+
+	if (ListView.IsValid()) ListView->RequestListRefresh();
+}
+
+void SGeneratorEditorWindow::ClearStageItems(TArray<TSharedPtr<FGeneratorStackItem>>& Items)
+{
+	for (const TSharedPtr<FGeneratorStackItem>& Item : Items)
+	{
+		if (Item && Item->Generator && Item->Generator->IsRooted())
+		{
+			Item->Generator->RemoveFromRoot();
+		}
+	}
+	Items.Empty();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Export Config
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -800,70 +1003,40 @@ FReply SGeneratorEditorWindow::OnExportConfigClicked()
 	if (!DesktopPlatform) return FReply::Handled();
 
 	TSharedPtr<SWindow> ParentWindow = FSlateApplication::Get().FindWidgetWindow(AsShared());
-	void* ParentWindowHandle =
+	void* ParentHandle =
 		(ParentWindow.IsValid() && ParentWindow->GetNativeWindow().IsValid())
 		? ParentWindow->GetNativeWindow()->GetOSWindowHandle()
 		: nullptr;
 
 	TArray<FString> OutFiles;
-	const bool bSelected = DesktopPlatform->SaveFileDialog(
-		ParentWindowHandle,
+	if (!DesktopPlatform->SaveFileDialog(
+		ParentHandle,
 		TEXT("Export Generator Config"),
 		FPaths::ProjectSavedDir(),
 		TEXT("GeneratorConfig.json"),
 		TEXT("JSON Files (*.json)|*.json|All Files (*.*)|*.*"),
-		EFileDialogFlags::None,
-		OutFiles);
-
-	if (!bSelected || OutFiles.Num() == 0) return FReply::Handled();
-
-	// Build JSON document
-	TSharedRef<FJsonObject> RootObj = MakeShared<FJsonObject>();
-
-	TArray<TSharedPtr<FJsonValue>> GeneratorsArray;
-	for (const TSharedPtr<FGeneratorStackItem>& Item : GeneratorItems)
+		EFileDialogFlags::None, OutFiles)
+		|| OutFiles.IsEmpty())
 	{
-		UCDGTrajectoryGenerator* Gen = Item ? Item->Generator : nullptr;
-		if (!Gen) continue;
-
-		TSharedRef<FJsonObject> GenObj = MakeShared<FJsonObject>();
-		GenObj->SetStringField(TEXT("class"), Gen->GetClass()->GetPathName());
-
-		TSharedPtr<FJsonObject> ConfigObj = MakeShared<FJsonObject>();
-		Gen->SerializeGeneratorConfig(ConfigObj);
-		GenObj->SetObjectField(TEXT("config"), ConfigObj);
-
-		GeneratorsArray.Add(MakeShared<FJsonValueObject>(GenObj));
+		return FReply::Handled();
 	}
 
-	RootObj->SetArrayField(TEXT("generators"), GeneratorsArray);
+	TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+	Root->SetArrayField(TEXT("positioning"), SerializeStageItems(PositionItems));
+	Root->SetArrayField(TEXT("movement"),    SerializeStageItems(MovementItems));
+	Root->SetArrayField(TEXT("effects"),     SerializeStageItems(EffectsItems));
 
 	FString JsonString;
-	const TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&JsonString);
-	FJsonSerializer::Serialize(RootObj, Writer);
-
+	FJsonSerializer::Serialize(Root, TJsonWriterFactory<>::Create(&JsonString));
 	const bool bSuccess = FFileHelper::SaveStringToFile(JsonString, *OutFiles[0]);
 
 	FNotificationInfo Info(bSuccess
 		? FText::Format(LOCTEXT("ExportConfigSuccess", "Config exported to:\n{0}"),
 			FText::FromString(OutFiles[0]))
 		: LOCTEXT("ExportConfigFailed", "Failed to export generator config"));
-	Info.ExpireDuration       = 5.f;
-	Info.bUseLargeFont        = false;
+	Info.ExpireDuration = 5.f;
 	Info.bUseSuccessFailIcons = true;
 	FSlateNotificationManager::Get().AddNotification(Info);
-
-	if (bSuccess)
-	{
-		UE_LOG(LogCameraDatasetGenEditor, Log,
-			TEXT("[GeneratorEditor] Config exported: %s (%d generators)"),
-			*OutFiles[0], GeneratorItems.Num());
-	}
-	else
-	{
-		UE_LOG(LogCameraDatasetGenEditor, Error,
-			TEXT("[GeneratorEditor] Failed to write config: %s"), *OutFiles[0]);
-	}
 
 	return FReply::Handled();
 }
@@ -878,24 +1051,24 @@ FReply SGeneratorEditorWindow::OnLoadConfigClicked()
 	if (!DesktopPlatform) return FReply::Handled();
 
 	TSharedPtr<SWindow> ParentWindow = FSlateApplication::Get().FindWidgetWindow(AsShared());
-	void* ParentWindowHandle =
+	void* ParentHandle =
 		(ParentWindow.IsValid() && ParentWindow->GetNativeWindow().IsValid())
 		? ParentWindow->GetNativeWindow()->GetOSWindowHandle()
 		: nullptr;
 
 	TArray<FString> OutFiles;
-	const bool bSelected = DesktopPlatform->OpenFileDialog(
-		ParentWindowHandle,
+	if (!DesktopPlatform->OpenFileDialog(
+		ParentHandle,
 		TEXT("Load Generator Config"),
 		FPaths::ProjectSavedDir(),
 		TEXT(""),
 		TEXT("JSON Files (*.json)|*.json|All Files (*.*)|*.*"),
-		EFileDialogFlags::None,
-		OutFiles);
+		EFileDialogFlags::None, OutFiles)
+		|| OutFiles.IsEmpty())
+	{
+		return FReply::Handled();
+	}
 
-	if (!bSelected || OutFiles.Num() == 0) return FReply::Handled();
-
-	// Read file
 	FString JsonString;
 	if (!FFileHelper::LoadFileToString(JsonString, *OutFiles[0]))
 	{
@@ -905,10 +1078,8 @@ FReply SGeneratorEditorWindow::OnLoadConfigClicked()
 		return FReply::Handled();
 	}
 
-	// Parse JSON
-	TSharedPtr<FJsonObject> RootObj;
-	const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(JsonString);
-	if (!FJsonSerializer::Deserialize(Reader, RootObj) || !RootObj.IsValid())
+	TSharedPtr<FJsonObject> Root;
+	if (!FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(JsonString), Root) || !Root.IsValid())
 	{
 		FNotificationInfo Info(LOCTEXT("LoadConfigParseFailed", "Failed to parse the config JSON"));
 		Info.ExpireDuration = 4.f;
@@ -916,136 +1087,39 @@ FReply SGeneratorEditorWindow::OnLoadConfigClicked()
 		return FReply::Handled();
 	}
 
-	const TArray<TSharedPtr<FJsonValue>>* GeneratorsArray = nullptr;
-	if (!RootObj->TryGetArrayField(TEXT("generators"), GeneratorsArray) || !GeneratorsArray)
-	{
-		FNotificationInfo Info(LOCTEXT("LoadConfigInvalid",
-			"Invalid config file: missing 'generators' array"));
-		Info.ExpireDuration = 4.f;
-		FSlateNotificationManager::Get().AddNotification(Info);
-		return FReply::Handled();
-	}
-
-	// Clear existing stack
-	for (const TSharedPtr<FGeneratorStackItem>& Item : GeneratorItems)
-	{
-		if (Item && Item->Generator && Item->Generator->IsRooted())
-		{
-			Item->Generator->RemoveFromRoot();
-		}
-	}
-	GeneratorItems.Empty();
+	// Clear all stages
+	ClearStageItems(PositionItems);
+	ClearStageItems(MovementItems);
+	ClearStageItems(EffectsItems);
 	SelectedItem.Reset();
-	if (DetailsView.IsValid())
-	{
-		DetailsView->SetObject(nullptr);
-	}
+	if (DetailsView.IsValid()) DetailsView->SetObject(nullptr);
 
-	// Reconstruct generators from JSON
-	int32 LoadedCount = 0;
-	for (const TSharedPtr<FJsonValue>& GenValue : *GeneratorsArray)
-	{
-		const TSharedPtr<FJsonObject>* GenObjPtr = nullptr;
-		if (!GenValue->TryGetObject(GenObjPtr) || !GenObjPtr) continue;
-		const TSharedPtr<FJsonObject>& GenObj = *GenObjPtr;
+	// Restore each stage
+	const TArray<TSharedPtr<FJsonValue>>* PosArray = nullptr;
+	const TArray<TSharedPtr<FJsonValue>>* MovArray = nullptr;
+	const TArray<TSharedPtr<FJsonValue>>* FxArray  = nullptr;
 
-		FString ClassName;
-		if (!GenObj->TryGetStringField(TEXT("class"), ClassName)) continue;
+	if (Root->TryGetArrayField(TEXT("positioning"), PosArray) && PosArray)
+		DeserializeStageItems(*PosArray, PositionItems, PositionListView);
+	if (Root->TryGetArrayField(TEXT("movement"), MovArray) && MovArray)
+		DeserializeStageItems(*MovArray, MovementItems, MovementListView);
+	if (Root->TryGetArrayField(TEXT("effects"), FxArray) && FxArray)
+		DeserializeStageItems(*FxArray, EffectsItems, EffectsListView);
 
-		UClass* Class = FindObject<UClass>(nullptr, *ClassName);
-		if (!Class)
-		{
-			UE_LOG(LogCameraDatasetGenEditor, Warning,
-				TEXT("[GeneratorEditor] Load: class not found: %s"), *ClassName);
-			continue;
-		}
-
-		UCDGTrajectoryGenerator* Gen = CreateGeneratorInstance(Class);
-		if (!Gen) continue;
-
-		// Restore configuration
-		const TSharedPtr<FJsonObject>* ConfigObjPtr = nullptr;
-		if (GenObj->TryGetObjectField(TEXT("config"), ConfigObjPtr) && ConfigObjPtr)
-		{
-			Gen->FetchGeneratorConfig(*ConfigObjPtr);
-		}
-
-		// Apply the shared reference sequence
-		if (SharedReferenceSequence.IsValid())
-		{
-			Gen->ReferenceSequence = SharedReferenceSequence.Get();
-		}
-
-		GeneratorItems.Add(MakeShared<FGeneratorStackItem>(Gen));
-		++LoadedCount;
-	}
-
-	GeneratorListView->RequestListRefresh();
-
+	const int32 Total = PositionItems.Num() + MovementItems.Num() + EffectsItems.Num();
 	FNotificationInfo Info(FText::Format(
 		LOCTEXT("LoadConfigSuccess", "Loaded {0} generators from config"),
-		FText::AsNumber(LoadedCount)));
+		FText::AsNumber(Total)));
 	Info.ExpireDuration       = 4.f;
-	Info.bUseLargeFont        = false;
 	Info.bUseSuccessFailIcons = true;
 	FSlateNotificationManager::Get().AddNotification(Info);
 
-	UE_LOG(LogCameraDatasetGenEditor, Log,
-		TEXT("[GeneratorEditor] Config loaded: %s (%d generators)"),
-		*OutFiles[0], LoadedCount);
-
-	return FReply::Handled();
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Close
-// ─────────────────────────────────────────────────────────────────────────────
-
-FReply SGeneratorEditorWindow::OnCloseClicked()
-{
-	TSharedPtr<SWindow> Window = FSlateApplication::Get().FindWidgetWindow(AsShared());
-	if (Window.IsValid())
-	{
-		Window->RequestDestroyWindow();
-	}
 	return FReply::Handled();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Config asset save / load
 // ─────────────────────────────────────────────────────────────────────────────
-
-namespace
-{
-	/** Serialise the current generator stack to a JSON string using the existing API. */
-	FString SerializeStackToJson(const TArray<TSharedPtr<FGeneratorStackItem>>& Items)
-	{
-		TSharedRef<FJsonObject> RootObj = MakeShared<FJsonObject>();
-		TArray<TSharedPtr<FJsonValue>> GeneratorsArray;
-
-		for (const TSharedPtr<FGeneratorStackItem>& Item : Items)
-		{
-			UCDGTrajectoryGenerator* Gen = Item ? Item->Generator : nullptr;
-			if (!Gen) continue;
-
-			TSharedRef<FJsonObject> GenObj = MakeShared<FJsonObject>();
-			GenObj->SetStringField(TEXT("class"), Gen->GetClass()->GetPathName());
-
-			TSharedPtr<FJsonObject> ConfigObj = MakeShared<FJsonObject>();
-			Gen->SerializeGeneratorConfig(ConfigObj);
-			GenObj->SetObjectField(TEXT("config"), ConfigObj);
-
-			GeneratorsArray.Add(MakeShared<FJsonValueObject>(GenObj));
-		}
-
-		RootObj->SetArrayField(TEXT("generators"), GeneratorsArray);
-
-		FString JsonString;
-		const TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&JsonString);
-		FJsonSerializer::Serialize(RootObj, Writer);
-		return JsonString;
-	}
-}
 
 FString SGeneratorEditorWindow::GetConfigAssetPath() const
 {
@@ -1058,64 +1132,37 @@ void SGeneratorEditorWindow::OnLoadConfigAssetChanged(const FAssetData& AssetDat
 	LoadedConfigAsset = Config;
 	if (!Config || Config->GeneratorsJson.IsEmpty()) return;
 
-	// Parse the stored JSON using the same path as OnLoadConfigClicked
-	TSharedPtr<FJsonObject> RootObj;
-	const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Config->GeneratorsJson);
-	if (!FJsonSerializer::Deserialize(Reader, RootObj) || !RootObj.IsValid()) return;
-
-	const TArray<TSharedPtr<FJsonValue>>* GeneratorsArray = nullptr;
-	if (!RootObj->TryGetArrayField(TEXT("generators"), GeneratorsArray) || !GeneratorsArray) return;
-
-	// Clear existing stack
-	for (const TSharedPtr<FGeneratorStackItem>& Item : GeneratorItems)
+	TSharedPtr<FJsonObject> Root;
+	if (!FJsonSerializer::Deserialize(
+		TJsonReaderFactory<>::Create(Config->GeneratorsJson), Root) || !Root.IsValid())
 	{
-		if (Item && Item->Generator && Item->Generator->IsRooted())
-		{
-			Item->Generator->RemoveFromRoot();
-		}
+		return;
 	}
-	GeneratorItems.Empty();
+
+	ClearStageItems(PositionItems);
+	ClearStageItems(MovementItems);
+	ClearStageItems(EffectsItems);
 	SelectedItem.Reset();
 	if (DetailsView.IsValid()) DetailsView->SetObject(nullptr);
 
-	// Reconstruct generators
-	for (const TSharedPtr<FJsonValue>& GenValue : *GeneratorsArray)
-	{
-		const TSharedPtr<FJsonObject>* GenObjPtr = nullptr;
-		if (!GenValue->TryGetObject(GenObjPtr) || !GenObjPtr) continue;
+	const TArray<TSharedPtr<FJsonValue>>* PosArray = nullptr;
+	const TArray<TSharedPtr<FJsonValue>>* MovArray = nullptr;
+	const TArray<TSharedPtr<FJsonValue>>* FxArray  = nullptr;
 
-		FString ClassName;
-		if (!(*GenObjPtr)->TryGetStringField(TEXT("class"), ClassName)) continue;
+	if (Root->TryGetArrayField(TEXT("positioning"), PosArray) && PosArray)
+		DeserializeStageItems(*PosArray, PositionItems, PositionListView);
+	if (Root->TryGetArrayField(TEXT("movement"), MovArray) && MovArray)
+		DeserializeStageItems(*MovArray, MovementItems, MovementListView);
+	if (Root->TryGetArrayField(TEXT("effects"), FxArray) && FxArray)
+		DeserializeStageItems(*FxArray, EffectsItems, EffectsListView);
 
-		UClass* Class = FindObject<UClass>(nullptr, *ClassName);
-		if (!Class) continue;
-
-		UCDGTrajectoryGenerator* Gen = CreateGeneratorInstance(Class);
-		if (!Gen) continue;
-
-		const TSharedPtr<FJsonObject>* ConfigObjPtr = nullptr;
-		if ((*GenObjPtr)->TryGetObjectField(TEXT("config"), ConfigObjPtr) && ConfigObjPtr)
-		{
-			Gen->FetchGeneratorConfig(*ConfigObjPtr);
-		}
-
-		if (SharedReferenceSequence.IsValid())
-		{
-			Gen->ReferenceSequence = SharedReferenceSequence.Get();
-		}
-
-		GeneratorItems.Add(MakeShared<FGeneratorStackItem>(Gen));
-	}
-
-	// Restore batch-fill toggle
 	bLetBatchProcessorFill = Config->bLetBatchProcessorFill;
 	if (DetailsView.IsValid()) DetailsView->ForceRefresh();
 
-	GeneratorListView->RequestListRefresh();
-
+	const int32 Total = PositionItems.Num() + MovementItems.Num() + EffectsItems.Num();
 	FNotificationInfo Info(FText::Format(
 		LOCTEXT("LoadConfigAssetSuccess", "Loaded {0} generators from config asset"),
-		FText::AsNumber(GeneratorItems.Num())));
+		FText::AsNumber(Total)));
 	Info.ExpireDuration       = 3.f;
 	Info.bUseSuccessFailIcons = true;
 	FSlateNotificationManager::Get().AddNotification(Info);
@@ -1123,12 +1170,26 @@ void SGeneratorEditorWindow::OnLoadConfigAssetChanged(const FAssetData& AssetDat
 
 FReply SGeneratorEditorWindow::OnSaveConfigAssetClicked()
 {
-	IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
+	IAssetTools& AssetTools =
+		FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
 
-	auto WriteToConfig = [this](UGeneratorStackConfig* Config)
+	// Build the JSON string for all three stages
+	auto BuildJson = [this]() -> FString
+	{
+		TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+		Root->SetArrayField(TEXT("positioning"), SerializeStageItems(PositionItems));
+		Root->SetArrayField(TEXT("movement"),    SerializeStageItems(MovementItems));
+		Root->SetArrayField(TEXT("effects"),     SerializeStageItems(EffectsItems));
+
+		FString Out;
+		FJsonSerializer::Serialize(Root, TJsonWriterFactory<>::Create(&Out));
+		return Out;
+	};
+
+	auto WriteToConfig = [this, &BuildJson](UGeneratorStackConfig* Config)
 	{
 		Config->Modify();
-		Config->GeneratorsJson        = SerializeStackToJson(GeneratorItems);
+		Config->GeneratorsJson        = BuildJson();
 		Config->bLetBatchProcessorFill = bLetBatchProcessorFill;
 		Config->MarkPackageDirty();
 
@@ -1144,8 +1205,7 @@ FReply SGeneratorEditorWindow::OnSaveConfigAssetClicked()
 	if (LoadedConfigAsset.IsValid())
 	{
 		WriteToConfig(LoadedConfigAsset.Get());
-
-		FNotificationInfo Info(LOCTEXT("SaveConfigAssetDone", "Generator stack config saved"));
+		FNotificationInfo Info(LOCTEXT("SaveConfigAssetDone", "Generator pipeline config saved"));
 		Info.ExpireDuration = 3.f;
 		FSlateNotificationManager::Get().AddNotification(Info);
 	}
@@ -1160,8 +1220,8 @@ FReply SGeneratorEditorWindow::OnSaveConfigAssetClicked()
 		{
 			WriteToConfig(NewConfig);
 			LoadedConfigAsset = NewConfig;
-
-			FNotificationInfo Info(LOCTEXT("CreateConfigAssetDone", "Generator stack config created and saved"));
+			FNotificationInfo Info(LOCTEXT("CreateConfigAssetDone",
+				"Generator pipeline config created and saved"));
 			Info.ExpireDuration = 3.f;
 			FSlateNotificationManager::Get().AddNotification(Info);
 		}
@@ -1182,15 +1242,23 @@ ECheckBoxState SGeneratorEditorWindow::GetBatchProcessorFillState() const
 void SGeneratorEditorWindow::OnBatchProcessorFillChanged(ECheckBoxState NewState)
 {
 	bLetBatchProcessorFill = (NewState == ECheckBoxState::Checked);
-	if (DetailsView.IsValid())
-	{
-		DetailsView->ForceRefresh();
-	}
+	if (DetailsView.IsValid()) DetailsView->ForceRefresh();
 }
 
 bool SGeneratorEditorWindow::IsRefSlotEnabled() const
 {
 	return !bLetBatchProcessorFill;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Close
+// ─────────────────────────────────────────────────────────────────────────────
+
+FReply SGeneratorEditorWindow::OnCloseClicked()
+{
+	TSharedPtr<SWindow> Window = FSlateApplication::Get().FindWidgetWindow(AsShared());
+	if (Window.IsValid()) Window->RequestDestroyWindow();
+	return FReply::Handled();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1201,9 +1269,9 @@ void CDGGeneratorEditor::OpenWindow()
 {
 	TSharedRef<SWindow> Window = SNew(SWindow)
 		.Title(LOCTEXT("WindowTitle", "Trajectory Generator Editor"))
-		.ClientSize(FVector2D(950.f, 620.f))
-		.MinWidth(700.f)
-		.MinHeight(450.f);
+		.ClientSize(FVector2D(1100.f, 720.f))
+		.MinWidth(800.f)
+		.MinHeight(550.f);
 
 	Window->SetContent(SNew(SGeneratorEditorWindow));
 

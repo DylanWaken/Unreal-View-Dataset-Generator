@@ -10,10 +10,8 @@
 #include "Misc/MessageDialog.h"
 
 #if WITH_EDITOR
-#include "AssetToolsModule.h"
 #include "AssetRegistry/IAssetRegistry.h"
 #include "AssetRegistry/AssetRegistryModule.h"
-#include "IAssetTools.h"
 #include "ObjectTools.h"
 #include "FileHelpers.h"
 #endif
@@ -53,6 +51,10 @@ void UCDGLevelSeqSubsystem::ScanForLevelSequence()
 	}
 
 	ActiveLevelSequence = LoadObject<ULevelSequence>(nullptr, *SequencePackageName);
+	// Guard: LoadObject can return a garbage-marked object that was deleted by
+	// a previous batch combo but not yet GC'd.  Treat it as "not found".
+	if (ActiveLevelSequence && !IsValid(ActiveLevelSequence))
+		ActiveLevelSequence = nullptr;
 	
 	if (ActiveLevelSequence)
 	{
@@ -190,41 +192,59 @@ FString UCDGLevelSeqSubsystem::GetSequencePackageName() const
 #if WITH_EDITOR
 ULevelSequence* UCDGLevelSeqSubsystem::CreateSequenceAsset(const FString& PackageName, const FString& AssetName)
 {
-	IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
-	
-	// Create the asset using AssetTools. This will find the appropriate factory (ULevelSequenceFactoryNew).
-	// Passing nullptr for Factory causes it to pick the default one.
-	UObject* NewAsset = AssetTools.CreateAsset(
-		AssetName, 
-		FPackageName::GetLongPackagePath(PackageName), 
-		ULevelSequence::StaticClass(), 
-		nullptr
-	);
-	
-	ActiveLevelSequence = Cast<ULevelSequence>(NewAsset);
-	
+	// Use FindObject / LoadObject / NewObject so we never show an "Overwrite?" dialog.
+	// This is the same pattern as ForceGetOrCreateLevelSequence in the batch processor.
+	const FString ObjectPath = PackageName + TEXT(".") + AssetName;
+
+	ActiveLevelSequence = FindObject<ULevelSequence>(nullptr, *ObjectPath);
+	// Guard: garbage-marked objects from a previous combo may still be in memory.
+	if (ActiveLevelSequence && !IsValid(ActiveLevelSequence)) ActiveLevelSequence = nullptr;
+
+	if (!ActiveLevelSequence)
+	{
+		ActiveLevelSequence = LoadObject<ULevelSequence>(nullptr, *ObjectPath);
+		if (ActiveLevelSequence && !IsValid(ActiveLevelSequence)) ActiveLevelSequence = nullptr;
+	}
+
 	if (ActiveLevelSequence)
 	{
-		UE_LOG(LogTemp, Log, TEXT("CDGLevelSeqSubsystem: Created new Level Sequence: %s"), *PackageName);
-		
-		// Initialize the sequence with a MovieScene
-		if (ActiveLevelSequence->GetMovieScene() == nullptr)
-		{
+		UE_LOG(LogTemp, Log, TEXT("CDGLevelSeqSubsystem: Reusing existing Level Sequence: %s"), *PackageName);
+		if (!ActiveLevelSequence->GetMovieScene())
 			ActiveLevelSequence->Initialize();
-		}
+		return ActiveLevelSequence;
+	}
 
-		// Auto-save the newly created asset
-		UPackage* Package = ActiveLevelSequence->GetOutermost();
-		if (Package)
+	// Not found anywhere — create a fresh one without going through AssetTools.
+	// If a garbage-marked package with this name is still in memory (not yet GC'd),
+	// rename it so CreatePackage produces a genuinely new package.
+	if (UPackage* OldPkg = FindObject<UPackage>(nullptr, *PackageName))
+	{
+		if (!IsValid(OldPkg))
 		{
-			FEditorFileUtils::PromptForCheckoutAndSave({ Package }, false, false);
+			OldPkg->Rename(nullptr, nullptr,
+				REN_DontCreateRedirectors | REN_ForceNoResetLoaders | REN_NonTransactional);
 		}
 	}
-	else
+
+	UPackage* Pkg = CreatePackage(*PackageName);
+	if (!Pkg)
+	{
+		UE_LOG(LogTemp, Error, TEXT("CDGLevelSeqSubsystem: Failed to create package for: %s"), *PackageName);
+		return nullptr;
+	}
+
+	ActiveLevelSequence = NewObject<ULevelSequence>(Pkg, *AssetName, RF_Public | RF_Standalone);
+	if (!ActiveLevelSequence)
 	{
 		UE_LOG(LogTemp, Error, TEXT("CDGLevelSeqSubsystem: Failed to create Level Sequence: %s"), *PackageName);
+		return nullptr;
 	}
 
+	ActiveLevelSequence->Initialize();
+
+	FAssetRegistryModule::AssetCreated(ActiveLevelSequence);
+
+	UE_LOG(LogTemp, Log, TEXT("CDGLevelSeqSubsystem: Created new Level Sequence: %s"), *PackageName);
 	return ActiveLevelSequence;
 }
 #endif
